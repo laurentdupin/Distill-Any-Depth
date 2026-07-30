@@ -24,5 +24,34 @@ int main() {
     assert(std::abs(chw[1] - static_cast<float>((0.0 - 0.456) / 0.224)) < 1e-6f);
     assert(std::abs(chw[2] - static_cast<float>((0.0 - 0.406) / 0.225)) < 1e-6f);
 
+    const std::uint8_t bgra[] = {
+        0, 10, 255, 99,
+        255, 20, 0, 88,
+    };
+    dad::preprocess_inferbridge_bgra8(
+        bgra, 2, 1, 8, {4, 1}, chw);
+    assert(chw.size() == 12);
+    assert(
+        std::abs(chw[0] - (0.0f - 0.485f) / 0.229f) < 1e-6f);
+    assert(
+        std::abs(chw[1] - (0.0f - 0.485f) / 0.229f) < 1e-6f);
+    assert(
+        std::abs(chw[2] - (1.0f - 0.485f) / 0.229f) < 1e-6f);
+    assert(
+        std::abs(chw[3] - (1.0f - 0.485f) / 0.229f) < 1e-6f);
+    assert(
+        std::abs(chw[8] - (1.0f - 0.406f) / 0.225f) < 1e-6f);
+    assert(
+        std::abs(chw[11] - (0.0f - 0.406f) / 0.225f) < 1e-6f);
+
+    std::vector<std::uint8_t> tall_bgra(425u * 4u, 0u);
+    tall_bgra[254u * 4u] = 17u;
+    tall_bgra[255u * 4u] = 231u;
+    dad::preprocess_inferbridge_bgra8(
+        tall_bgra.data(), 1, 425, 4, {1, 210}, chw);
+    const float expected_legacy_nearest =
+        (17.0f / 255.0f - 0.485f) / 0.229f;
+    assert(std::abs(chw[126] - expected_legacy_nearest) < 1e-6f);
+
     return 0;
 }

@@ -145,6 +145,13 @@ class CreateOptions(ctypes.Structure):
     ]
 
 
+class ImageShape(ctypes.Structure):
+    _fields_ = [
+        ("width", ctypes.c_int32),
+        ("height", ctypes.c_int32),
+    ]
+
+
 def configure_dll(path: Path):
     dll = ctypes.CDLL(str(path.resolve()))
     dll.dad_create.argtypes = [
@@ -174,6 +181,24 @@ def configure_dll(path: Path):
         ctypes.c_size_t,
     ]
     dll.dad_infer_tensor_f32.restype = ctypes.c_int
+    dll.dad_get_inferbridge_shape.argtypes = [
+        ctypes.c_int32,
+        ctypes.c_int32,
+        ctypes.c_int32,
+        ctypes.POINTER(ImageShape),
+    ]
+    dll.dad_get_inferbridge_shape.restype = ctypes.c_int
+    dll.dad_inferbridge_bgra8_f32.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_uint8),
+        ctypes.c_int32,
+        ctypes.c_int32,
+        ctypes.c_ssize_t,
+        ctypes.c_int32,
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.c_size_t,
+    ]
+    dll.dad_inferbridge_bgra8_f32.restype = ctypes.c_int
     dll.dad_last_error.restype = ctypes.c_char_p
     return dll
 
@@ -280,6 +305,11 @@ def main() -> None:
         help="validate the deployed InferBridge preprocessing/output contract",
     )
     parser.add_argument(
+        "--native-image-contract",
+        action="store_true",
+        help="exercise the native BGRA8-to-float InferBridge image ABI",
+    )
+    parser.add_argument(
         "--reference-threads",
         type=int,
         default=0,
@@ -287,6 +317,8 @@ def main() -> None:
     )
     parser.add_argument("--vulkan-device-index", type=int, default=0)
     args = parser.parse_args()
+    if args.native_image_contract and not args.inferbridge_contract:
+        parser.error("--native-image-contract requires --inferbridge-contract")
     if args.reference_threads > 0:
         torch.set_num_threads(args.reference_threads)
 
@@ -345,7 +377,44 @@ def main() -> None:
                     image, args.input_size, args.reference_device
                 )
             )
-            if args.inferbridge_contract:
+            native_is_normalized = args.native_image_contract
+            if args.native_image_contract:
+                shape = ImageShape()
+                status = dll.dad_get_inferbridge_shape(
+                    width,
+                    height,
+                    args.input_size,
+                    ctypes.byref(shape),
+                )
+                if status != 0:
+                    raise RuntimeError(
+                        f"{path}: {dll.dad_last_error().decode()}"
+                    )
+                output_width, output_height = shape.width, shape.height
+                if (output_height, output_width) != tuple(tensor.shape[-2:]):
+                    raise RuntimeError(
+                        f"{path}: native/Python output shape mismatch"
+                    )
+                native = np.empty(
+                    output_width * output_height, dtype=np.float32
+                )
+                bgra = cv2.cvtColor(image, cv2.COLOR_BGR2BGRA)
+                start = time.perf_counter()
+                status = dll.dad_inferbridge_bgra8_f32(
+                    context,
+                    bgra.ctypes.data_as(
+                        ctypes.POINTER(ctypes.c_uint8)
+                    ),
+                    width,
+                    height,
+                    bgra.strides[0],
+                    args.input_size,
+                    native.ctypes.data_as(
+                        ctypes.POINTER(ctypes.c_float)
+                    ),
+                    native.size,
+                )
+            elif args.inferbridge_contract:
                 output_height, output_width = tensor.shape[-2:]
                 tensor_cpu = np.ascontiguousarray(
                     tensor.cpu().numpy()[0], dtype=np.float32
@@ -400,10 +469,24 @@ def main() -> None:
             python_seconds = time.perf_counter() - start
 
             native_depth = native.reshape(output_height, output_width)
-            difference = np.abs(native_depth - reference)
-            differing = int(np.count_nonzero(native_depth != reference))
+            if native_is_normalized:
+                reference_minimum = float(reference.min())
+                reference_span = (
+                    float(reference.max()) - reference_minimum
+                )
+                reference_compared = (
+                    np.zeros_like(reference, dtype=np.float32)
+                    if reference_span == 0.0
+                    else (reference - reference_minimum) / reference_span
+                )
+            else:
+                reference_compared = reference
+            difference = np.abs(native_depth - reference_compared)
+            differing = int(np.count_nonzero(
+                native_depth != reference_compared
+            ))
             reference_l1 = float(
-                np.abs(reference, dtype=np.float64).sum()
+                np.abs(reference_compared, dtype=np.float64).sum()
             )
             row = {
                 "encoder": args.encoder,
@@ -429,12 +512,14 @@ def main() -> None:
                     if reference_l1
                     else 0.0
                 ),
-                "reference_min": float(reference.min()),
-                "reference_max": float(reference.max()),
+                "reference_min": float(reference_compared.min()),
+                "reference_max": float(reference_compared.max()),
                 "native_seconds": native_seconds,
                 "python_seconds": python_seconds,
             }
-            row.update(normalized_metrics(native_depth, reference))
+            row.update(normalized_metrics(
+                native_depth, reference_compared
+            ))
             rows.append(row)
 
             depth = native_depth

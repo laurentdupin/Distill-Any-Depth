@@ -19,6 +19,11 @@ int main(void) {
     assert(dad_get_network_shape(480, 640, 518, &shape) == DAD_STATUS_OK);
     assert(shape.width == 518);
     assert(shape.height == 686);
+    assert(
+        dad_get_inferbridge_shape(480, 640, 518, &shape) ==
+        DAD_STATUS_OK);
+    assert(shape.width == 686);
+    assert(shape.height == 518);
 
     assert(
         dad_get_network_shape(0, 480, 518, &shape) ==

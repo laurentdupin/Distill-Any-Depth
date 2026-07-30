@@ -36,4 +36,12 @@ void preprocess_bgr8(
     ImageShape destination,
     std::vector<float>& rgb_chw);
 
+void preprocess_inferbridge_bgra8(
+    const std::uint8_t* source,
+    int width,
+    int height,
+    std::ptrdiff_t stride,
+    ImageShape destination,
+    std::vector<float>& channels_chw);
+
 }  // namespace dad

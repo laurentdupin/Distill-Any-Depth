@@ -214,6 +214,12 @@ DAD_API dad_status DAD_CALL dad_get_network_shape(
     int32_t input_size,
     dad_image_shape* network_shape);
 
+DAD_API dad_status DAD_CALL dad_get_inferbridge_shape(
+    int32_t image_width,
+    int32_t image_height,
+    int32_t input_size,
+    dad_image_shape* output_shape);
+
 DAD_API dad_status DAD_CALL dad_create(
     const char* model_path_utf8,
     const dad_create_options* options,
@@ -275,6 +281,21 @@ DAD_API void DAD_CALL dad_gpu_output_release(
 DAD_API dad_status DAD_CALL dad_infer_bgr8(
     dad_context* context,
     const uint8_t* bgr,
+    int32_t image_width,
+    int32_t image_height,
+    ptrdiff_t row_stride_bytes,
+    int32_t input_size,
+    float* output_depth,
+    size_t output_count);
+
+/*
+ * Exact deployed InferBridge image contract. BGRA bytes B, G, R are model
+ * channels 0, 1, 2; resize is PyTorch legacy nearest; output is independently
+ * min/max normalized float32 in [0,1].
+ */
+DAD_API dad_status DAD_CALL dad_inferbridge_bgra8_f32(
+    dad_context* context,
+    const uint8_t* bgra,
     int32_t image_width,
     int32_t image_height,
     ptrdiff_t row_stride_bytes,

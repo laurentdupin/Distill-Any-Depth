@@ -286,4 +286,54 @@ void preprocess_bgr8(
         rgb_chw);
 }
 
+void preprocess_inferbridge_bgra8(
+    const std::uint8_t* source,
+    int width,
+    int height,
+    std::ptrdiff_t stride,
+    ImageShape destination,
+    std::vector<float>& channels_chw) {
+    if (source == nullptr || width <= 0 || height <= 0 ||
+        stride < static_cast<std::ptrdiff_t>(width) * 4 ||
+        destination.width <= 0 || destination.height <= 0) {
+        throw std::invalid_argument("invalid InferBridge source image");
+    }
+    const std::size_t plane =
+        static_cast<std::size_t>(destination.width) * destination.height;
+    channels_chw.resize(plane * 3u);
+    constexpr float mean[3] = {0.485f, 0.456f, 0.406f};
+    constexpr float stddev[3] = {0.229f, 0.224f, 0.225f};
+    const float scale_x =
+        static_cast<float>(width) / static_cast<float>(destination.width);
+    const float scale_y =
+        static_cast<float>(height) / static_cast<float>(destination.height);
+    for (int destination_y = 0;
+         destination_y < destination.height; ++destination_y) {
+        const int source_y = std::min(
+            static_cast<int>(std::floor(destination_y * scale_y)),
+            height - 1);
+        const std::uint8_t* row =
+            source + static_cast<std::ptrdiff_t>(source_y) * stride;
+        for (int destination_x = 0;
+             destination_x < destination.width; ++destination_x) {
+            const int source_x = std::min(
+                static_cast<int>(std::floor(destination_x * scale_x)),
+                width - 1);
+            const std::uint8_t* pixel =
+                row + static_cast<std::ptrdiff_t>(source_x) * 4;
+            const std::size_t offset =
+                static_cast<std::size_t>(destination_y) *
+                    destination.width +
+                destination_x;
+            for (int channel = 0; channel < 3; ++channel) {
+                const float unit =
+                    static_cast<float>(pixel[channel]) / 255.0f;
+                channels_chw[
+                    static_cast<std::size_t>(channel) * plane + offset] =
+                    (unit - mean[channel]) / stddev[channel];
+            }
+        }
+    }
+}
+
 }  // namespace dad

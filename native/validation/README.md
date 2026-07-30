@@ -86,3 +86,6 @@ on all 22 assets at size 140:
 | Radeon RX 6700 XT | 0.000654% | 0.000800% | 0.004482% |
 
 All Small, Base, and Large variants now pass the less-than-1% requirement.
+The additive `dad_get_inferbridge_shape` and
+`dad_inferbridge_bgra8_f32` image ABI was exercised directly on the same
+22 images. Worst normalized pixel error is 0.004518%.
