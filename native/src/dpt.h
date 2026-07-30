@@ -60,6 +60,7 @@ private:
     bool convolution_block_selected_ = false;
     bool convolution_block8_ = false;
     bool convolution_half_weight_ = false;
+    bool convolution_tiled_ = false;
 };
 
 }  // namespace dad

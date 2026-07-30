@@ -68,6 +68,41 @@ DptHead::DptHead(
 void DptHead::select_convolution_block() {
     convolution_block8_ = false;
     convolution_half_weight_ = false;
+    constexpr std::uint32_t side = 16;
+    const VkDeviceSize bytes =
+        elements(side, side, features_) * sizeof(float);
+    VulkanBuffer input = context_.create_device_buffer(bytes);
+    VulkanBuffer output = context_.create_device_buffer(bytes);
+    const VulkanBuffer& convolution_weight = weight(
+        weights_,
+        "depth_head.scratch.refinenet1.resConfUnit2.conv1.weight");
+    const VulkanBuffer& convolution_bias = weight(
+        weights_,
+        "depth_head.scratch.refinenet1.resConfUnit2.conv1.bias");
+    const auto run = [&](bool tiled) {
+        const auto start = std::chrono::steady_clock::now();
+        context_.batch([&] {
+            for (int repetition = 0; repetition < 8; ++repetition) {
+                operators_.conv2d(
+                    output, input, convolution_weight, convolution_bias,
+                    side, side, features_, features_, 3, 1, 1, true,
+                    false, false, tiled);
+            }
+        });
+        return std::chrono::duration<double, std::micro>(
+            std::chrono::steady_clock::now() - start).count();
+    };
+    run(false);
+    run(true);
+    std::array<double, 3> direct{};
+    std::array<double, 3> tiled{};
+    for (std::size_t sample = 0; sample < direct.size(); ++sample) {
+        direct[sample] = run(false);
+        tiled[sample] = run(true);
+    }
+    std::sort(direct.begin(), direct.end());
+    std::sort(tiled.begin(), tiled.end());
+    convolution_tiled_ = tiled[1] < direct[1] * 0.95;
     weights_.retain_dpt_precision(false);
     convolution_block_selected_ = true;
 }
@@ -119,7 +154,8 @@ FeatureMap DptHead::conv(
         padding,
         has_bias,
         convolution_block8_,
-        convolution_half_weight_);
+        convolution_half_weight_,
+        convolution_tiled_);
     return output;
 }
 
