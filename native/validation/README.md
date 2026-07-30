@@ -60,7 +60,7 @@ The same 22-image, input-size-140 PyTorch CPU comparison produced:
 All images pass the 1% correctness requirement. Detailed rows are stored in
 `distill-base-140/vitb_cpu.csv`.
 
-## Distill AnyDepth Large diagnostic
+## Distill AnyDepth Large
 
 - Canonical checkpoint:
   `xingyang1/Distill-Any-Depth/large/model.safetensors`
@@ -71,14 +71,18 @@ All images pass the 1% correctness requirement. Detailed rows are stored in
 - Derived size: 1,341,340,992 bytes
 
 The converter flattens the DAM checkpoint's chunked `backbone.blocks.0.*`
-names into the native DINOv2 namespace without changing tensor bytes. Across
-the same 22 images, median relative L1 is 0.237660% and mean is 0.342133%.
-The worst image is 1.454475% (maximum absolute error 2.144165); 20 of 22
-images remain below 1%. Detailed rows are in
-`distill-large-140/vitl_cpu.csv`.
+names into the native DINOv2 namespace without changing tensor bytes. The
+original validation exposed a 1.454475% outlier. Its cause was a semantic
+activation mismatch: native used tanh-approximate GELU while the pinned
+PyTorch graph uses exact-erf GELU.
 
-## Pending
+After correcting GELU, the exact deployed InferBridge contract was compared
+on all 22 assets at size 140:
 
-- Large remains accuracy-pending under the earlier strict 1% per-image gate.
-  The remaining deviation matches the cumulative FP32 transformer drift seen
-  in other ViT-L ports rather than a missing operator or checkpoint mapping.
+| GPU | Raw relative L1 | Normalized relative L1 | Normalized max pixel |
+|---|---:|---:|---:|
+| Radeon RX 9070 | 0.000723% | 0.000834% | 0.004518% |
+| GeForce GTX 1080 | 0.000857% | 0.001020% | 0.002939% |
+| Radeon RX 6700 XT | 0.000654% | 0.000800% | 0.004482% |
+
+All Small, Base, and Large variants now pass the less-than-1% requirement.

@@ -165,6 +165,15 @@ def configure_dll(path: Path):
         ctypes.c_size_t,
     ]
     dll.dad_infer_bgr8.restype = ctypes.c_int
+    dll.dad_infer_tensor_f32.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.c_int32,
+        ctypes.c_int32,
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.c_size_t,
+    ]
+    dll.dad_infer_tensor_f32.restype = ctypes.c_int
     dll.dad_last_error.restype = ctypes.c_char_p
     return dll
 
@@ -195,6 +204,62 @@ def python_input(
     return torch.from_numpy(prepared).unsqueeze(0).to(device)
 
 
+def inferbridge_input(
+    image: np.ndarray, input_size: int, device: str
+) -> torch.Tensor:
+    resize = Resize(
+        width=input_size,
+        height=input_size,
+        resize_target=False,
+        keep_aspect_ratio=True,
+        ensure_multiple_of=14,
+        resize_method="lower_bound",
+        image_interpolation_method=cv2.INTER_NEAREST,
+    )
+    target_width, target_height = resize.get_size(
+        image.shape[1], image.shape[0]
+    )
+    tensor = torch.from_numpy(image).to(device)
+    tensor = tensor.unsqueeze(0).permute(0, 3, 1, 2)
+    tensor = torch.nn.functional.interpolate(
+        tensor, (target_width, target_height)
+    ).float()
+    mean = torch.tensor(
+        [0.485, 0.456, 0.406], device=device
+    ).view(1, 3, 1, 1)
+    std = torch.tensor(
+        [0.229, 0.224, 0.225], device=device
+    ).view(1, 3, 1, 1)
+    return (tensor / 255.0 - mean) / std
+
+
+def normalized_metrics(
+    native: np.ndarray, reference: np.ndarray
+) -> dict[str, float]:
+    def normalize(value: np.ndarray) -> np.ndarray:
+        minimum = float(value.min())
+        span = float(value.max()) - minimum
+        if span == 0.0:
+            return np.zeros_like(value, dtype=np.float32)
+        return (value.astype(np.float32, copy=False) - minimum) / span
+
+    native_normalized = normalize(native)
+    reference_normalized = normalize(reference)
+    difference = np.abs(native_normalized - reference_normalized)
+    reference_l1 = float(
+        np.abs(reference_normalized, dtype=np.float64).sum()
+    )
+    return {
+        "normalized_max_abs": float(difference.max()),
+        "normalized_mean_abs": float(difference.mean()),
+        "normalized_relative_l1": (
+            float(difference.astype(np.float64).sum() / reference_l1)
+            if reference_l1
+            else 0.0
+        ),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--encoder", choices=CONFIGS, required=True)
@@ -209,7 +274,21 @@ def main() -> None:
         choices=("cpu", "vulkan"),
         default="cpu",
     )
+    parser.add_argument(
+        "--inferbridge-contract",
+        action="store_true",
+        help="validate the deployed InferBridge preprocessing/output contract",
+    )
+    parser.add_argument(
+        "--reference-threads",
+        type=int,
+        default=0,
+        help="override PyTorch CPU threads (zero keeps its default)",
+    )
+    parser.add_argument("--vulkan-device-index", type=int, default=0)
     args = parser.parse_args()
+    if args.reference_threads > 0:
+        torch.set_num_threads(args.reference_threads)
 
     config = CONFIGS[args.encoder]
     start = time.perf_counter()
@@ -225,7 +304,11 @@ def main() -> None:
 
     dll = configure_dll(args.dll)
     options = CreateOptions(
-        ctypes.sizeof(CreateOptions), 1, config["enum"], 0, 0
+        ctypes.sizeof(CreateOptions),
+        1,
+        config["enum"],
+        args.vulkan_device_index,
+        0,
     )
     context = ctypes.c_void_p()
     start = time.perf_counter()
@@ -253,18 +336,48 @@ def main() -> None:
             if image is None:
                 raise RuntimeError(f"cannot decode {path}")
             height, width = image.shape[:2]
-            native = np.empty(width * height, dtype=np.float32)
-            start = time.perf_counter()
-            status = dll.dad_infer_bgr8(
-                context,
-                image.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
-                width,
-                height,
-                image.strides[0],
-                args.input_size,
-                native.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
-                native.size,
+            tensor = (
+                inferbridge_input(
+                    image, args.input_size, args.reference_device
+                )
+                if args.inferbridge_contract
+                else python_input(
+                    image, args.input_size, args.reference_device
+                )
             )
+            if args.inferbridge_contract:
+                output_height, output_width = tensor.shape[-2:]
+                tensor_cpu = np.ascontiguousarray(
+                    tensor.cpu().numpy()[0], dtype=np.float32
+                )
+                native = np.empty(
+                    output_width * output_height, dtype=np.float32
+                )
+                start = time.perf_counter()
+                status = dll.dad_infer_tensor_f32(
+                    context,
+                    tensor_cpu.ctypes.data_as(
+                        ctypes.POINTER(ctypes.c_float)
+                    ),
+                    output_width,
+                    output_height,
+                    native.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                    native.size,
+                )
+            else:
+                output_width, output_height = width, height
+                native = np.empty(width * height, dtype=np.float32)
+                start = time.perf_counter()
+                status = dll.dad_infer_bgr8(
+                    context,
+                    image.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+                    width,
+                    height,
+                    image.strides[0],
+                    args.input_size,
+                    native.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                    native.size,
+                )
             native_seconds = time.perf_counter() - start
             if status != 0:
                 raise RuntimeError(
@@ -272,32 +385,34 @@ def main() -> None:
                 )
 
             start = time.perf_counter()
-            tensor = python_input(
-                image, args.input_size, args.reference_device
-            )
             with torch.inference_mode():
                 reference, _ = model(tensor)
-                reference = torch.nn.functional.interpolate(
-                    reference,
-                    (height, width),
-                    mode="bilinear",
-                    align_corners=False,
-                )[0, 0]
+                if args.inferbridge_contract:
+                    reference = reference[0, 0]
+                else:
+                    reference = torch.nn.functional.interpolate(
+                        reference,
+                        (height, width),
+                        mode="bilinear",
+                        align_corners=False,
+                    )[0, 0]
             reference = reference.cpu().numpy().astype(np.float32, copy=False)
             python_seconds = time.perf_counter() - start
 
-            difference = np.abs(native.reshape(height, width) - reference)
-            differing = int(np.count_nonzero(native.reshape(height, width) != reference))
+            native_depth = native.reshape(output_height, output_width)
+            difference = np.abs(native_depth - reference)
+            differing = int(np.count_nonzero(native_depth != reference))
             reference_l1 = float(
                 np.abs(reference, dtype=np.float64).sum()
             )
             row = {
                 "encoder": args.encoder,
                 "reference_device": args.reference_device,
+                "vulkan_device_index": args.vulkan_device_index,
                 "image": path.as_posix(),
-                "width": width,
-                "height": height,
-                "pixels": width * height,
+                "width": output_width,
+                "height": output_height,
+                "pixels": output_width * output_height,
                 "differing": differing,
                 "max_abs": float(difference.max()),
                 "mean_abs": float(difference.mean()),
@@ -319,9 +434,10 @@ def main() -> None:
                 "native_seconds": native_seconds,
                 "python_seconds": python_seconds,
             }
+            row.update(normalized_metrics(native_depth, reference))
             rows.append(row)
 
-            depth = native.reshape(height, width)
+            depth = native_depth
             span = float(depth.max() - depth.min())
             preview = (
                 np.zeros_like(depth, dtype=np.uint8)
