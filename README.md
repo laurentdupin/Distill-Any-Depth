@@ -2,6 +2,12 @@
 <h1>Distill Any Depth: 
   Distillation Creates a Stronger Monocular Depth Estimator
 </h1>
+
+> **Native inference:** `native/` contains a dependency-free C ABI and Vulkan
+> runtime for the Small and Base DINOv2+DPT variants. The correctness-first
+> Small port is validated against the pinned PyTorch CPU graph. Large uses a
+> different DAM graph and remains explicitly unsupported until its separate
+> port is complete. See `native/docs/architecture.md`.
   
 [**Xiankang He**](https://github.com/shuiyued)<sup>1*,2</sup> · [**Dongyan Guo**](https://homepage.zjut.edu.cn/gdy/)<sup>1*</sup> · [**Hongji Li**]()<sup>2,3</sup>
   <br>
