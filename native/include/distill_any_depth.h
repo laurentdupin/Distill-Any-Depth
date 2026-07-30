@@ -44,7 +44,6 @@ typedef enum dad_status {
 typedef enum dad_encoder {
     DAD_ENCODER_VITS = 0,
     DAD_ENCODER_VITB = 1,
-    /* Reserved for the distinct DAM ViT-L graph; not implemented yet. */
     DAD_ENCODER_VITL = 2
 } dad_encoder;
 

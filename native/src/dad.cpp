@@ -49,7 +49,8 @@ dad_status fail(dad_status status, const char* message) {
 
 bool supported_encoder(dad_encoder encoder) {
     return encoder == DAD_ENCODER_VITS ||
-        encoder == DAD_ENCODER_VITB;
+        encoder == DAD_ENCODER_VITB ||
+        encoder == DAD_ENCODER_VITL;
 }
 
 void retain_gpu_job(dad_gpu_job* job) {

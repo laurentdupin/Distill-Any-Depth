@@ -60,7 +60,25 @@ The same 22-image, input-size-140 PyTorch CPU comparison produced:
 All images pass the 1% correctness requirement. Detailed rows are stored in
 `distill-base-140/vitb_cpu.csv`.
 
+## Distill AnyDepth Large diagnostic
+
+- Canonical checkpoint:
+  `xingyang1/Distill-Any-Depth/large/model.safetensors`
+- Canonical SHA-256:
+  `c7d46f6f0048bc13e40691713294d0e8c6099231bf3130457123ce48aab425eb`
+- Encoder: ViT-L/14
+- Native tensor count: 407
+- Derived size: 1,341,340,992 bytes
+
+The converter flattens the DAM checkpoint's chunked `backbone.blocks.0.*`
+names into the native DINOv2 namespace without changing tensor bytes. Across
+the same 22 images, median relative L1 is 0.237660% and mean is 0.342133%.
+The worst image is 1.454475% (maximum absolute error 2.144165); 20 of 22
+images remain below 1%. Detailed rows are in
+`distill-large-140/vitl_cpu.csv`.
+
 ## Pending
 
-- Large is a distinct DAM ViT-L graph and is not accepted by the converter or
-  runtime until that graph is ported and validated.
+- Large remains accuracy-pending under the earlier strict 1% per-image gate.
+  The remaining deviation matches the cumulative FP32 transformer drift seen
+  in other ViT-L ports rather than a missing operator or checkpoint mapping.

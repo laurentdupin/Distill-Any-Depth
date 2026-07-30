@@ -11,9 +11,13 @@ The current correctness-first runtime implements the pinned repository's
 - ReLU depth output;
 - source-size bilinear output resize with `align_corners=False`.
 
-The Large checkpoint is deliberately rejected. It uses the repository's
-distinct DAM ViT-L graph and requires a separate operator/graph port; treating
-it as the DPT variant would silently produce an invalid model.
+The Large checkpoint is constructed by a different Python `DAM` class, but
+its selected configuration resolves to the same DINOv2 ViT-L/14 and DPT
+operator topology. Its checkpoint nests transformer blocks under a chunked
+`backbone.blocks.0` prefix; the trusted converter deterministically flattens
+that prefix to the runtime's canonical tensor names. Large execution is
+available for diagnostics but remains below the strict validation gate
+because two images exceed 1% relative L1 from cumulative ViT-L FP32 drift.
 
 ## Deployment boundary
 

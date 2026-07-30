@@ -67,10 +67,24 @@ sys.modules["diffusers.models"] = diffusers_models
 sys.modules["diffusers.models.modeling_utils"] = diffusers_modeling
 sys.modules["diffusers.configuration_utils"] = diffusers_configuration
 
+# DAM imports two unused timm constructors while selecting its repository-local
+# DINOv2 implementation. Avoid installing timm for that packaging-only import.
+timm = types.ModuleType("timm")
+timm_models = types.ModuleType("timm.models")
+timm_vision = types.ModuleType("timm.models.vision_transformer")
+timm_vision.vit_large_patch16_224 = lambda *args, **kwargs: None
+timm_vision.vit_large_patch14_224 = lambda *args, **kwargs: None
+sys.modules["timm"] = timm
+sys.modules["timm.models"] = timm_models
+sys.modules["timm.models.vision_transformer"] = timm_vision
+
 repository_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(repository_root))
 
 from distillanydepth.depth_anything_v2.dpt import DepthAnythingV2  # noqa: E402
+from distillanydepth.modeling.archs.dam.dam import (  # noqa: E402
+    DepthAnything as DamDepthAnything,
+)
 from distillanydepth.depth_anything_v2.util.transform import (  # noqa: E402
     NormalizeImage,
     PrepareForNet,
@@ -93,6 +107,21 @@ CONFIGS = {
             "encoder": "vitb",
             "features": 128,
             "out_channels": [96, 192, 384, 768],
+        },
+    },
+    "vitl": {
+        "enum": 2,
+        "model_type": "dam",
+        "model": {
+            "encoder": "vitl",
+            "features": 256,
+            "out_channels": [256, 512, 1024, 1024],
+            "use_bn": False,
+            "use_clstoken": False,
+            "max_depth": 150.0,
+            "mode": "disparity",
+            "pretrain_type": "dinov2",
+            "del_mask_token": True,
         },
     },
 }
@@ -184,7 +213,11 @@ def main() -> None:
 
     config = CONFIGS[args.encoder]
     start = time.perf_counter()
-    model = DepthAnythingV2(**config["model"])
+    model = (
+        DamDepthAnything(**config["model"])
+        if config.get("model_type") == "dam"
+        else DepthAnythingV2(**config["model"])
+    )
     state = load_reference_state(args.checkpoint)
     model.load_state_dict(state, strict=True)
     model.eval().to(args.reference_device)

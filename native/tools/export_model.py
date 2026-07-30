@@ -25,7 +25,7 @@ DTYPE_FLOAT32 = 1
 HEADER = struct.Struct("<8sIIIIQQQQQ")
 RECORD = struct.Struct("<112sII4QQQQIIQ")
 ALIGNMENT = 64
-ENCODERS = {"vits": 0, "vitb": 1}
+ENCODERS = {"vits": 0, "vitb": 1, "vitl": 2}
 METADATA_MAGIC = b"DAD1META"
 METADATA_VERSION = 1
 CONVERTER_ID = "dad-export-safetensors-v1"
@@ -104,8 +104,26 @@ def main() -> None:
     tensors: list[
         tuple[str, tuple[int, ...], torch.Tensor, int, int]
     ] = []
-    for name in sorted(state):
-        value = state[name]
+    exported = {}
+    for canonical_name, value in state.items():
+        if args.encoder == "vitl" and canonical_name.startswith(
+            "backbone.blocks.0."
+        ):
+            name = (
+                "pretrained.blocks." +
+                canonical_name[len("backbone.blocks.0."):]
+            )
+        elif args.encoder == "vitl" and canonical_name.startswith(
+            "backbone."
+        ):
+            name = "pretrained." + canonical_name[len("backbone."):]
+        else:
+            name = canonical_name
+        if name in exported:
+            raise ValueError(f"duplicate exported tensor name: {name}")
+        exported[name] = value
+    for name in sorted(exported):
+        value = exported[name]
         if not isinstance(value, torch.Tensor):
             raise TypeError(f"state entry is not a tensor: {name}")
         encoded_name = name.encode("utf-8")
