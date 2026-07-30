@@ -90,6 +90,7 @@ endif()
 add_library(distill_any_depth SHARED
     src/dad.cpp
     src/image.cpp
+    src/inferbridge_harness.cpp
 )
 add_library(distill_any_depth::distill_any_depth ALIAS distill_any_depth)
 
@@ -104,6 +105,7 @@ target_include_directories(distill_any_depth
 target_compile_definitions(distill_any_depth
     PRIVATE
         DAD_BUILD_DLL
+        INFERBRIDGE_HARNESS_BUILDING_LIBRARY
         $<$<BOOL:${DAD_WITH_VULKAN}>:DAD_WITH_VULKAN=1>
 )
 set_target_properties(distill_any_depth PROPERTIES
@@ -137,6 +139,7 @@ install(TARGETS distill_any_depth
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
 )
 install(FILES include/distill_any_depth.h DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+install(FILES include/inferbridge_harness.h DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 
 if(DAD_BUILD_TOOLS)
     add_executable(dad_run tools/dad_run.c)
@@ -170,6 +173,17 @@ if(DAD_BUILD_TESTS)
     add_executable(dad_c_abi_smoke tests/c_abi_smoke.c)
     target_link_libraries(dad_c_abi_smoke PRIVATE distill_any_depth)
     add_test(NAME dad_c_abi_smoke COMMAND dad_c_abi_smoke)
+
+    add_executable(dad_harness_abi_smoke tests/harness_abi_smoke.c)
+    target_link_libraries(dad_harness_abi_smoke PRIVATE distill_any_depth)
+    add_test(NAME dad_harness_abi_smoke COMMAND dad_harness_abi_smoke)
+
+    add_executable(dad_harness_full_graph tests/harness_full_graph.cpp)
+    target_compile_features(dad_harness_full_graph PRIVATE cxx_std_17)
+    target_link_libraries(dad_harness_full_graph PRIVATE distill_any_depth)
+    add_test(NAME dad_harness_full_graph COMMAND dad_harness_full_graph)
+    set_tests_properties(
+        dad_harness_full_graph PROPERTIES SKIP_RETURN_CODE 77)
 
     add_executable(dad_image_tests tests/image_tests.cpp src/image.cpp)
     target_include_directories(dad_image_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")

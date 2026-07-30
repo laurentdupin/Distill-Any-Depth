@@ -16,8 +16,8 @@ its selected configuration resolves to the same DINOv2 ViT-L/14 and DPT
 operator topology. Its checkpoint nests transformer blocks under a chunked
 `backbone.blocks.0` prefix; the trusted converter deterministically flattens
 that prefix to the runtime's canonical tensor names. Large execution is
-available for diagnostics but remains below the strict validation gate
-because two images exceed 1% relative L1 from cumulative ViT-L FP32 drift.
+is validated alongside Small and Base. Matching PyTorch's exact-erf GELU
+removed the earlier apparent ViT-L drift.
 
 ## Deployment boundary
 
@@ -72,3 +72,20 @@ D3D12 submission, polling, cancellation, correlated frame metadata, output
 leases, and stable status/error reporting. A context supports three live GPU
 jobs/leases and otherwise returns `DAD_STATUS_INVALID_STATE` so a caller can
 apply a latest-frame drop policy.
+
+## InferBridge binary harness
+
+The `distill_any_depth` library itself exports InferBridge harness ABI 1.0
+through `ibrh_get_api`, so deployment needs no adapter DLL. Its vendored
+contract declaration matches InferBridge's versioned public header.
+
+The first integration slice truthfully advertises only host BGRA8 input and
+host normalized float32 depth output. Submission is synchronous and serialized
+per model, maximum in-flight jobs is one, and output memory is held by an
+explicit lease that outlives the job handle. The neural graph still runs on
+the selected Vulkan GPU, but the harness boundary stages input and output.
+
+The existing external D3D12 path is not advertised through the harness until
+its preprocessing, processing dimensions, min/max normalization, and output
+texture exactly implement the deployed InferBridge contract without host
+staging.
