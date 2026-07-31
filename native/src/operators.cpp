@@ -37,6 +37,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace dad {
 namespace {
@@ -87,8 +88,8 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
       linear_vec8_(context.create_pipeline(
           dad_linear_vec8_spv,
           dad_linear_vec8_spv_size,
-          4,
-          12)),
+          6,
+          20)),
       gelu_(context.create_pipeline(
           dad_gelu_spv, dad_gelu_spv_size, 2, 4)),
       layer_norm_(context.create_pipeline(
@@ -288,19 +289,31 @@ void VulkanOperators::linear(
         std::uint32_t rows;
         std::uint32_t input_columns;
         std::uint32_t output_columns;
-    } parameters{rows, input_columns, output_columns};
+        std::uint32_t gelu;
+        std::uint32_t residual;
+    } parameters{
+        rows, input_columns, output_columns,
+        gelu && !half_weight ? 1u : 0u, 0u};
+    const std::vector<const VulkanBuffer*> descriptors =
+        half_weight
+        ? std::vector<const VulkanBuffer*>{
+            &output, &input, &weight, &bias}
+        : std::vector<const VulkanBuffer*>{
+            &output, &input, &weight, &bias, &output, &bias};
     context_.dispatch(
         !half_weight
             ? linear_vec8_
-            : (half_weight
-            ? (block16 ? linear16_half_ : linear_half_)
-            : (block16 ? linear16_ : linear_)),
-        {&output, &input, &weight, &bias},
+            : (block16 ? linear16_half_ : linear_half_),
+        descriptors,
         &parameters,
-        sizeof(parameters),
-        divide_up(divide_up(output_columns, 4), 8),
-        divide_up(divide_up(rows, 7), 8));
-    if (gelu) {
+        half_weight ? 12u : sizeof(parameters),
+        half_weight
+            ? divide_up(divide_up(output_columns, 4), 8)
+            : divide_up(output_columns, 64),
+        half_weight
+            ? divide_up(divide_up(rows, 4), 8)
+            : divide_up(rows, 40));
+    if (gelu && half_weight) {
         struct GeluParameters {
             std::uint32_t count;
         } gelu_parameters{rows * output_columns};
@@ -311,6 +324,54 @@ void VulkanOperators::linear(
             sizeof(gelu_parameters),
             divide_up(gelu_parameters.count, 256));
     }
+}
+
+void VulkanOperators::linear_residual(
+    VulkanBuffer& output,
+    const VulkanBuffer& input,
+    const VulkanBuffer& weight,
+    const VulkanBuffer& bias,
+    const VulkanBuffer& residual,
+    const VulkanBuffer& scale,
+    std::uint32_t rows,
+    std::uint32_t input_columns,
+    std::uint32_t output_columns) {
+    if (rows == 0 || input_columns == 0 || output_columns == 0) {
+        throw std::invalid_argument(
+            "linear-residual dimensions cannot be zero");
+    }
+    require_bytes(input, std::uint64_t(rows) * input_columns, "input");
+    require_bytes(
+        weight,
+        std::uint64_t(output_columns) * input_columns,
+        "weight");
+    require_bytes(bias, output_columns, "bias");
+    require_bytes(
+        residual,
+        std::uint64_t(rows) * output_columns,
+        "residual");
+    require_bytes(scale, output_columns, "scale");
+    require_bytes(
+        output,
+        std::uint64_t(rows) * output_columns,
+        "output");
+    struct Parameters {
+        std::uint32_t rows;
+        std::uint32_t input_columns;
+        std::uint32_t output_columns;
+        std::uint32_t gelu;
+        std::uint32_t residual;
+    } parameters{
+        rows, input_columns, output_columns, 0u, 1u};
+    context_.dispatch(
+        linear_vec8_,
+        {
+            &output, &input, &weight, &bias, &residual, &scale,
+        },
+        &parameters,
+        sizeof(parameters),
+        divide_up(output_columns, 64),
+        divide_up(rows, 40));
 }
 
 void VulkanOperators::layer_norm(
