@@ -141,6 +141,25 @@ typedef struct dad_d3d12_texture_submit_request {
     uint64_t timestamp_ns;
 } dad_d3d12_texture_submit_request;
 
+typedef struct dad_d3d12_texture_binding_request {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t input_texture_handle;
+    uint32_t input_width;
+    uint32_t input_height;
+    uint32_t input_pixel_format;
+    int32_t input_size;
+    uint64_t wait_fence_handle;
+    uint64_t wait_fence_value;
+    uint64_t output_texture_handle;
+    uint32_t output_width;
+    uint32_t output_height;
+    uint64_t signal_fence_handle;
+    uint64_t signal_fence_value;
+    uint64_t source_frame_id;
+    uint64_t timestamp_ns;
+} dad_d3d12_texture_binding_request;
+
 typedef struct dad_gpu_job_status {
     uint32_t struct_size;
     uint32_t state;
@@ -247,6 +266,11 @@ DAD_API dad_status DAD_CALL dad_submit_d3d12(
 DAD_API dad_status DAD_CALL dad_submit_d3d12_texture(
     dad_context* context,
     const dad_d3d12_texture_submit_request* request,
+    dad_gpu_job** job);
+
+DAD_API dad_status DAD_CALL dad_submit_d3d12_texture_binding(
+    dad_context* context,
+    const dad_d3d12_texture_binding_request* request,
     dad_gpu_job** job);
 
 DAD_API dad_status DAD_CALL dad_gpu_job_poll(

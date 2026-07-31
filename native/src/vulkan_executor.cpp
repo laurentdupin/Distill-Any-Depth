@@ -357,6 +357,21 @@ void validate_shared_texture(
     }
 }
 
+void validate_shared_depth_texture(
+    ID3D12Device* device, std::uintptr_t handle,
+    std::uint32_t width, std::uint32_t height) {
+    ComPtr<ID3D12Resource> resource;
+    check_hresult(device->OpenSharedHandle(
+        reinterpret_cast<HANDLE>(handle), IID_PPV_ARGS(&resource)),
+        "OpenSharedHandle(DAD depth output)");
+    const D3D12_RESOURCE_DESC description = resource->GetDesc();
+    if (description.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+        description.Width != width || description.Height != height ||
+        description.DepthOrArraySize != 1 || description.MipLevels != 1 ||
+        description.SampleDesc.Count != 1 || description.Format != DXGI_FORMAT_R32_FLOAT)
+        throw std::invalid_argument("shared D3D12 depth texture does not match its descriptor");
+}
+
 GpuCapabilities d3d12_capabilities(
     const VulkanContext& context,
     ID3D12Device* device) {
@@ -423,7 +438,7 @@ public:
         output_image_ = VulkanImage{};
         input_image_ = VulkanImage{};
         output_buffer_ = VulkanBuffer{};
-        slot_->occupied.store(false, std::memory_order_release);
+        if (slot_) slot_->occupied.store(false, std::memory_order_release);
     }
 
     dad_gpu_job_state state() const override {
@@ -443,6 +458,8 @@ public:
         if (cancelled_.load(std::memory_order_acquire)) {
             throw std::runtime_error("GPU job was cancelled");
         }
+        if (!slot_) throw std::runtime_error(
+            "InferBridge-owned output has no standalone output lease");
         GpuOutput result;
         result.kind = slot_->kind;
         result.width = width_;
@@ -728,21 +745,32 @@ public:
             request.width,
             request.height,
             request.pixel_format);
-        std::shared_ptr<GpuSlot> slot =
-            acquire_gpu_slot(gpu_slots_, next_gpu_slot_);
+        const bool external_output = request.output_texture_handle != 0;
+        if (external_output) {
+            if (request.output_width != request.width ||
+                request.output_height != request.height ||
+                !request.signal_fence_handle || !request.signal_fence_value)
+                throw std::invalid_argument("invalid InferBridge-owned D3D12 output binding");
+            validate_shared_depth_texture(d3d12_device_.Get(),
+                request.output_texture_handle, request.output_width, request.output_height);
+        }
+        std::shared_ptr<GpuSlot> slot;
+        if (!external_output) slot = acquire_gpu_slot(gpu_slots_, next_gpu_slot_);
         try {
             const ImageShape shape = network_shape(
                 static_cast<int>(request.width),
                 static_cast<int>(request.height),
                 request.input_size);
-            VulkanImage output = prepare_texture_output(
-                *slot,
-                d3d12_device_.Get(),
-                context_,
-                request.width,
-                request.height);
-            const std::uint64_t signal_value =
-                ++slot->fence_value;
+            VulkanImage output = external_output
+                ? context_.import_d3d12_image(
+                    reinterpret_cast<void*>(request.output_texture_handle),
+                    request.output_width, request.output_height,
+                    VK_FORMAT_R32_SFLOAT,
+                    VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)
+                : prepare_texture_output(*slot, d3d12_device_.Get(), context_,
+                    request.width, request.height);
+            const std::uint64_t signal_value = external_output
+                ? request.signal_fence_value : ++slot->fence_value;
             const VkFormat input_format =
                 request.pixel_format == DAD_GPU_PIXEL_BGRA8
                 ? VK_FORMAT_B8G8R8A8_UNORM
@@ -760,7 +788,10 @@ public:
                     request.wait_fence_handle),
                 request.wait_fence_value);
             VulkanSemaphore signal = context_.import_d3d12_fence(
-                slot->shared.fence_handle, signal_value);
+                reinterpret_cast<void*>(external_output
+                    ? request.signal_fence_handle
+                    : reinterpret_cast<std::uintptr_t>(slot->shared.fence_handle)),
+                signal_value);
             VulkanSubmission submission = context_.batch_async(
                 std::move(wait),
                 std::move(signal),
@@ -817,8 +848,7 @@ public:
                 request.source_frame_id,
                 request.timestamp_ns);
         } catch (...) {
-            slot->occupied.store(
-                false, std::memory_order_release);
+            if (slot) slot->occupied.store(false, std::memory_order_release);
             throw;
         }
 #endif
