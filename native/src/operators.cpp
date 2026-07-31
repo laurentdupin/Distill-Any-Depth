@@ -15,6 +15,7 @@
 #include "conv2d_half_spv.h"
 #include "conv2d8_half_spv.h"
 #include "conv2d_tiled_spv.h"
+#include "conv2d_tiled16x8_spv.h"
 #include "conv_transpose_nonoverlap_spv.h"
 #include "conv_transpose_nonoverlap_half_spv.h"
 #include "gelu_spv.h"
@@ -168,6 +169,11 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
           dad_conv2d_tiled_spv_size,
           4,
           40)),
+      conv2d_tiled16x8_(context.create_pipeline(
+          dad_conv2d_tiled16x8_spv,
+          dad_conv2d_tiled16x8_spv_size,
+          4,
+          40)),
       conv_transpose_nonoverlap_(context.create_pipeline(
           dad_conv_transpose_nonoverlap_spv,
           dad_conv_transpose_nonoverlap_spv_size,
@@ -232,6 +238,7 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
     conv2d_half_.set_debug_name("conv2d_half");
     conv2d8_half_.set_debug_name("conv2d8_half");
     conv2d_tiled_.set_debug_name("conv2d_tiled");
+    conv2d_tiled16x8_.set_debug_name("conv2d_tiled16x8");
     conv_transpose_nonoverlap_.set_debug_name(
         "conv_transpose_nonoverlap");
     conv_transpose_nonoverlap_half_.set_debug_name(
@@ -716,16 +723,16 @@ void VulkanOperators::conv2d(
         output_width == input_width && output_height == input_height;
     context_.dispatch(
         use_tiled
-            ? conv2d_tiled_
+            ? conv2d_tiled16x8_
             : (half_weight
             ? (block8 ? conv2d8_half_ : conv2d_half_)
             : (block8 ? conv2d8_ : conv2d_)),
         {&output, &input, &weight, &bias},
         &parameters,
         sizeof(parameters),
-        divide_up(output_width, 8),
+        divide_up(output_width, use_tiled ? 16 : 8),
         divide_up(output_height, 8),
-        divide_up(output_channels, block8 ? 8 : 4));
+        divide_up(output_channels, (block8 || use_tiled) ? 8 : 4));
 }
 
 void VulkanOperators::conv_transpose_nonoverlap(

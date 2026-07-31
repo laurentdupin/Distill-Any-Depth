@@ -163,6 +163,7 @@ private:
     VulkanPipeline conv2d_half_;
     VulkanPipeline conv2d8_half_;
     VulkanPipeline conv2d_tiled_;
+    VulkanPipeline conv2d_tiled16x8_;
     VulkanPipeline conv_transpose_nonoverlap_;
     VulkanPipeline conv_transpose_nonoverlap_half_;
     VulkanPipeline bilinear_align_false_;
