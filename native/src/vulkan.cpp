@@ -226,6 +226,29 @@ VulkanContext::VulkanContext(
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(physical_device_, &properties);
     device_name_ = properties.deviceName;
+    VkPhysicalDeviceSubgroupSizeControlProperties subgroup_control{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES,
+    };
+    VkPhysicalDeviceProperties2 subgroup_properties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        &subgroup_control,
+    };
+    vkGetPhysicalDeviceProperties2(
+        physical_device_, &subgroup_properties);
+    VkPhysicalDeviceSubgroupSizeControlFeatures subgroup_features{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES,
+    };
+    VkPhysicalDeviceFeatures2 device_features{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+        &subgroup_features,
+    };
+    vkGetPhysicalDeviceFeatures2(physical_device_, &device_features);
+    subgroup_size_forced_ =
+        subgroup_features.subgroupSizeControl == VK_TRUE &&
+        (subgroup_control.requiredSubgroupSizeStages &
+         VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
+        subgroup_control.minSubgroupSize <= 32 &&
+        subgroup_control.maxSubgroupSize >= 32;
 #if defined(_WIN32)
     VkPhysicalDeviceIDProperties identity{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES,
@@ -392,7 +415,7 @@ VulkanContext::VulkanContext(
     };
     const VkDeviceCreateInfo device_info{
         VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        nullptr,
+        subgroup_size_forced_ ? &subgroup_features : nullptr,
         0,
         1,
         &queue_info,
@@ -1551,9 +1574,14 @@ VulkanPipeline VulkanContext::create_pipeline(
     check(
         vkCreateShaderModule(device_, &shader_info, nullptr, &shader),
         "vkCreateShaderModule");
+    const VkPipelineShaderStageRequiredSubgroupSizeCreateInfo required_subgroup{
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO,
+        nullptr,
+        32u,
+    };
     const VkPipelineShaderStageCreateInfo stage{
         VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-        nullptr,
+        subgroup_size_forced_ ? &required_subgroup : nullptr,
         0,
         VK_SHADER_STAGE_COMPUTE_BIT,
         shader,

@@ -380,6 +380,7 @@ private:
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     VkQueryPool profile_query_pool_ = VK_NULL_HANDLE;
     bool profile_dispatches_ = false;
+    bool subgroup_size_forced_ = false;
     float timestamp_period_ns_ = 0.0f;
     std::unordered_map<std::string, ProfileStat> profile_stats_;
     VkCommandBuffer batch_command_ = VK_NULL_HANDLE;
