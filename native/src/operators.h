@@ -159,6 +159,7 @@ private:
     VulkanPipeline project_tokens_;
     VulkanPipeline project_tokens_half_;
     VulkanPipeline conv2d_;
+    VulkanPipeline conv2d_pointwise_gemm_;
     VulkanPipeline conv2d8_;
     VulkanPipeline conv2d_half_;
     VulkanPipeline conv2d8_half_;

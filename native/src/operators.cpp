@@ -11,6 +11,7 @@
 #include "bmm_score_half_spv.h"
 #include "bmm_value_half_spv.h"
 #include "conv2d_spv.h"
+#include "conv2d_pointwise_gemm_spv.h"
 #include "conv2d8_spv.h"
 #include "conv2d_half_spv.h"
 #include "conv2d8_half_spv.h"
@@ -155,6 +156,9 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
           16)),
       conv2d_(context.create_pipeline(
           dad_conv2d_spv, dad_conv2d_spv_size, 4, 40)),
+      conv2d_pointwise_gemm_(context.create_pipeline(
+          dad_conv2d_pointwise_gemm_spv,
+          dad_conv2d_pointwise_gemm_spv_size, 4, 40)),
       conv2d8_(context.create_pipeline(
           dad_conv2d8_spv, dad_conv2d8_spv_size, 4, 40)),
       conv2d_half_(context.create_pipeline(
@@ -234,6 +238,7 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
     project_tokens_half_.set_debug_name(
         "project_tokens_half");
     conv2d_.set_debug_name("conv2d");
+    conv2d_pointwise_gemm_.set_debug_name("conv2d_pointwise_gemm");
     conv2d8_.set_debug_name("conv2d8");
     conv2d_half_.set_debug_name("conv2d_half");
     conv2d8_half_.set_debug_name("conv2d8_half");
@@ -721,18 +726,26 @@ void VulkanOperators::conv2d(
         tiled && !half_weight && !block8 && kernel == 3 &&
         stride == 1 && padding == 1 &&
         output_width == input_width && output_height == input_height;
+    const bool pointwise =
+        !half_weight && kernel == 1 && stride == 1 && padding == 0 &&
+        output_width == input_width && output_height == input_height;
     context_.dispatch(
-        use_tiled
+        pointwise
+            ? conv2d_pointwise_gemm_
+            : (use_tiled
             ? conv2d_tiled16x8_
             : (half_weight
             ? (block8 ? conv2d8_half_ : conv2d_half_)
-            : (block8 ? conv2d8_ : conv2d_)),
+            : (block8 ? conv2d8_ : conv2d_))),
         {&output, &input, &weight, &bias},
         &parameters,
         sizeof(parameters),
-        divide_up(output_width, use_tiled ? 16 : 8),
-        divide_up(output_height, 8),
-        divide_up(output_channels, (block8 || use_tiled) ? 8 : 4));
+        pointwise ? divide_up(output_width * output_height, 32)
+            : divide_up(output_width, use_tiled ? 16 : 8),
+        pointwise ? divide_up(output_channels, 32)
+            : divide_up(output_height, 8),
+        pointwise ? 1
+            : divide_up(output_channels, (block8 || use_tiled) ? 8 : 4));
 }
 
 void VulkanOperators::conv_transpose_nonoverlap(
