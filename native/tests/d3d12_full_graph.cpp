@@ -1,4 +1,5 @@
 #include "distill_any_depth.h"
+#include "inferbridge_harness.h"
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -11,6 +12,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -56,6 +58,14 @@ void check(dad_status status, const char* operation) {
             std::string(operation) + " failed: " +
             dad_status_string(status) + ": " +
             dad_last_error());
+    }
+}
+
+void check(ibrh_result result, const char* operation) {
+    if (result != IBRH_OK) {
+        throw std::runtime_error(
+            std::string(operation) + " failed with InferBridge result " +
+            std::to_string(static_cast<unsigned>(result)));
     }
 }
 
@@ -869,6 +879,9 @@ void compare_reference(
 }
 
 std::filesystem::path model_path() {
+    if (const char* configured = std::getenv("DAD_MODEL")) {
+        return configured;
+    }
     if (const char* configured = std::getenv("DAD_VITS_MODEL")) {
         return configured;
     }
@@ -877,6 +890,24 @@ std::filesystem::path model_path() {
 #else
     return {};
 #endif
+}
+
+dad_encoder model_encoder(const std::filesystem::path& model) {
+    const std::string name = model.filename().string();
+    if (name.find("vitl") != std::string::npos ||
+        name.find("large") != std::string::npos)
+        return DAD_ENCODER_VITL;
+    if (name.find("vitb") != std::string::npos ||
+        name.find("base") != std::string::npos)
+        return DAD_ENCODER_VITB;
+    return DAD_ENCODER_VITS;
+}
+
+std::string harness_parameters(dad_encoder encoder) {
+    const char* name = encoder == DAD_ENCODER_VITL ? "vitl" :
+        encoder == DAD_ENCODER_VITB ? "vitb" : "vits";
+    return std::string("{\"Encoder\":\"") + name +
+        "\",\"Size\":\"140\"}";
 }
 
 }  // namespace
@@ -893,7 +924,7 @@ int main() try {
         dad_probe_gpu_capabilities(0, &probed),
         "dad_probe_gpu_capabilities");
     dad_create_options options{
-        sizeof(options), DAD_ABI_VERSION, DAD_ENCODER_VITS, 0, 0};
+        sizeof(options), DAD_ABI_VERSION, model_encoder(model), 0, 0};
     dad_context* context = nullptr;
     check(
         dad_create(model.string().c_str(), &options, &context),
@@ -1367,6 +1398,166 @@ int main() try {
     std::cout
         << "three retained texture leases, exhaustion, and stable "
            "slot reuse passed\n";
+
+    // Exercise the exact public InferBridge ABI used by the product.  This is
+    // deliberately in the real full-graph test, rather than a fake-resource
+    // ABI smoke test, so advertised GPU capabilities remain evidence-backed.
+    ibrh_api harness{};
+    check(
+        ibrh_get_api(
+            IBRH_CURRENT_API_VERSION, sizeof(harness), &harness),
+        "ibrh_get_api");
+    ibrh_capabilities harness_capabilities{};
+    check(
+        harness.query_capabilities(
+            sizeof(harness_capabilities), &harness_capabilities),
+        "ibrh query_capabilities");
+    constexpr std::uint64_t required_harness_flags =
+        IBRH_CAP_GPU_RESOURCES | IBRH_CAP_EXTERNAL_SYNCHRONIZATION |
+        IBRH_CAP_GPU_RESIDENT_OUTPUT;
+    if ((harness_capabilities.flags & required_harness_flags) !=
+            required_harness_flags ||
+        harness_capabilities.maximum_in_flight_jobs != 3u)
+        throw std::runtime_error(
+            "InferBridge GPU texture capabilities are incomplete");
+
+    const auto* luid_bytes = reinterpret_cast<const unsigned char*>(
+        &capabilities.adapter_luid);
+    char device_json[40]{};
+    const int device_length = std::snprintf(
+        device_json, sizeof(device_json),
+        "{\"luid\":\"%02x%02x%02x%02x%02x%02x%02x%02x\"}",
+        luid_bytes[0], luid_bytes[1], luid_bytes[2], luid_bytes[3],
+        luid_bytes[4], luid_bytes[5], luid_bytes[6], luid_bytes[7]);
+    if (device_length <= 0 ||
+        static_cast<std::size_t>(device_length) >= sizeof(device_json))
+        throw std::runtime_error("failed to format adapter LUID");
+
+    ibrh_runtime_create_request runtime_request{};
+    runtime_request.struct_size = sizeof(runtime_request);
+    runtime_request.api_version = IBRH_CURRENT_API_VERSION;
+    runtime_request.backend = {"native", 6u};
+    runtime_request.requested_device_json = {
+        device_json, static_cast<std::size_t>(device_length)};
+    ibrh_runtime* harness_runtime = nullptr;
+    check(
+        harness.runtime_create(
+            sizeof(runtime_request), &runtime_request, &harness_runtime),
+        "ibrh runtime_create");
+
+    const std::string model_text = model.string();
+    const std::string parameters = harness_parameters(model_encoder(model));
+    ibrh_model_load_request load_request{};
+    load_request.struct_size = sizeof(load_request);
+    load_request.api_version = IBRH_CURRENT_API_VERSION;
+    load_request.model_path = {model_text.data(), model_text.size()};
+    load_request.parameters_json = {parameters.data(), parameters.size()};
+    ibrh_model* harness_model = nullptr;
+    check(
+        harness.model_load(
+            harness_runtime, sizeof(load_request), &load_request,
+            &harness_model),
+        "ibrh model_load");
+
+    const std::vector<std::uint8_t> harness_pixels =
+        make_pixels(width, height, 120);
+    SharedTextureInput harness_input = upload_capture_texture(
+        device.Get(), queue.Get(), harness_pixels, width, height,
+        DXGI_FORMAT_B8G8R8A8_UNORM);
+    ibrh_resource harness_resource{};
+    harness_resource.struct_size = sizeof(harness_resource);
+    harness_resource.api_version = IBRH_CURRENT_API_VERSION;
+    harness_resource.domain = IBRH_RESOURCE_DOMAIN_D3D12;
+    harness_resource.kind = IBRH_RESOURCE_KIND_IMAGE_2D;
+    harness_resource.access = IBRH_RESOURCE_ACCESS_READ;
+    harness_resource.pixel_format = IBRH_PIXEL_BGRA8;
+    harness_resource.width = width;
+    harness_resource.height = height;
+    harness_resource.depth = 1u;
+    harness_resource.native_handle_type = IBRH_NATIVE_HANDLE_WIN32_SHARED;
+    harness_resource.native_handle = reinterpret_cast<std::uintptr_t>(
+        harness_input.resource_handle);
+    ibrh_synchronization harness_wait{};
+    harness_wait.struct_size = sizeof(harness_wait);
+    harness_wait.api_version = IBRH_CURRENT_API_VERSION;
+    harness_wait.kind = IBRH_SYNC_D3D12_FENCE;
+    harness_wait.operation = IBRH_SYNC_WAIT;
+    harness_wait.native_handle_type = IBRH_NATIVE_HANDLE_WIN32_SHARED;
+    harness_wait.native_handle = reinterpret_cast<std::uintptr_t>(
+        harness_input.fence_handle);
+    harness_wait.value = harness_input.fence_value;
+    ibrh_submit_request harness_submit{};
+    harness_submit.struct_size = sizeof(harness_submit);
+    harness_submit.api_version = IBRH_CURRENT_API_VERSION;
+    harness_submit.inputs = &harness_resource;
+    harness_submit.input_count = 1u;
+    harness_submit.synchronizations = &harness_wait;
+    harness_submit.synchronization_count = 1u;
+    harness_submit.source_frame_id = 12000u;
+    harness_submit.timestamp_ns = 423456789u;
+    harness_submit.parameters_json = {parameters.data(), parameters.size()};
+    ibrh_job* harness_job = nullptr;
+    check(
+        harness.submit(
+            harness_model, sizeof(harness_submit), &harness_submit,
+            &harness_job),
+        "ibrh submit D3D12 texture");
+
+    // The submit call must duplicate all borrowed handles before returning.
+    CloseHandle(harness_input.resource_handle);
+    CloseHandle(harness_input.fence_handle);
+    harness_input.resource_handle = nullptr;
+    harness_input.fence_handle = nullptr;
+    harness_input.resource.Reset();
+    harness_input.ready.Reset();
+
+    ibrh_output_descriptor harness_output{};
+    ibrh_output_lease* harness_lease = nullptr;
+    check(
+        harness.output_acquire(
+            harness_job, 0u, sizeof(harness_output), &harness_output,
+            &harness_lease),
+        "ibrh output_acquire D3D12 texture");
+    if (harness_output.source_frame_id != harness_submit.source_frame_id ||
+        harness_output.timestamp_ns != harness_submit.timestamp_ns ||
+        harness_output.payload_type != IBRH_PIXEL_DEPTH_FLOAT32 ||
+        harness_output.resource.domain != IBRH_RESOURCE_DOMAIN_D3D12 ||
+        harness_output.resource.pixel_format != IBRH_PIXEL_DEPTH_FLOAT32 ||
+        harness_output.ready.kind != IBRH_SYNC_D3D12_FENCE)
+        throw std::runtime_error(
+            "InferBridge GPU output descriptor or correlation failed");
+
+    dad_d3d12_texture_output_descriptor native_output{};
+    native_output.struct_size = sizeof(native_output);
+    native_output.shared_texture_handle = harness_output.resource.native_handle;
+    native_output.width = harness_output.resource.width;
+    native_output.height = harness_output.resource.height;
+    native_output.pixel_format = DAD_GPU_PIXEL_DEPTH_FLOAT32;
+    native_output.ready_fence_handle = harness_output.ready.native_handle;
+    native_output.ready_fence_value = harness_output.ready.value;
+    native_output.source_frame_id = harness_output.source_frame_id;
+    native_output.timestamp_ns = harness_output.timestamp_ns;
+    wait_depth_texture_ready(device.Get(), native_output);
+    ibrh_job_status harness_status{};
+    check(
+        harness.job_poll(harness_job, sizeof(harness_status), &harness_status),
+        "ibrh job_poll D3D12 texture");
+    if (harness_status.state != IBRH_JOB_COMPLETE ||
+        harness_status.source_frame_id != harness_submit.source_frame_id)
+        throw std::runtime_error(
+            "InferBridge GPU completion correlation failed");
+
+    // A lease remains valid after the job/model/runtime are released.
+    harness.job_release(harness_job);
+    harness.model_unload(harness_model);
+    harness.runtime_destroy(harness_runtime);
+    const std::vector<float> harness_depth = read_depth_texture(
+        device.Get(), queue.Get(), native_output);
+    validate_depth(harness_depth);
+    compare_reference(context, harness_pixels, width, height, harness_depth);
+    harness.output_release(harness_lease);
+    std::cout
+        << "InferBridge shared texture/fence graph and shutdown lease passed\n";
 
     // Hold the imported wait unsignaled so cancellation is deterministic.
     const std::vector<std::uint8_t> pixels =

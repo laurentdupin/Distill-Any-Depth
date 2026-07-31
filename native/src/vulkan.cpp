@@ -462,15 +462,18 @@ VulkanContext::VulkanContext(
         "vkCreateCommandPool");
 
     const VkDescriptorPoolSize pool_sizes[] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096},
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 4096},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 16384},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 16384},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 64},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 64},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64},
     };
     const VkDescriptorPoolCreateInfo descriptor_pool_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         nullptr,
         VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-        1024,
-        2,
+        4096,
+        static_cast<std::uint32_t>(std::size(pool_sizes)),
         pool_sizes,
     };
     check(
