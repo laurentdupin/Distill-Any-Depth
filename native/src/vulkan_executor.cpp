@@ -520,24 +520,34 @@ public:
             context_.create_device_buffer(input_elements * sizeof(float));
         context_.upload(
             image, input, input_elements * sizeof(float));
-        EncoderOutput encoded = encoder_.forward(
-            image,
-            static_cast<std::uint32_t>(width),
-            static_cast<std::uint32_t>(height));
-        FeatureMap depth = dpt_.forward(std::move(encoded));
-        if (output_width != width || output_height != height) {
-            VulkanBuffer resized = context_.create_device_buffer(
-                static_cast<std::size_t>(output_width) *
-                output_height * sizeof(float));
-            operators_.bilinear_align_false(
-                resized,
-                depth.buffer,
+        FeatureMap depth;
+        const auto run_graph = [&] {
+            EncoderOutput encoded = encoder_.forward(
+                image,
                 static_cast<std::uint32_t>(width),
-                static_cast<std::uint32_t>(height),
-                static_cast<std::uint32_t>(output_width),
-                static_cast<std::uint32_t>(output_height),
-                1);
-            depth.buffer = std::move(resized);
+                static_cast<std::uint32_t>(height));
+            depth = dpt_.forward(std::move(encoded));
+            if (output_width != width || output_height != height) {
+                VulkanBuffer resized = context_.create_device_buffer(
+                    static_cast<std::size_t>(output_width) *
+                    output_height * sizeof(float));
+                operators_.bilinear_align_false(
+                    resized,
+                    depth.buffer,
+                    static_cast<std::uint32_t>(width),
+                    static_cast<std::uint32_t>(height),
+                    static_cast<std::uint32_t>(output_width),
+                    static_cast<std::uint32_t>(output_height),
+                    1);
+                depth.buffer = std::move(resized);
+            }
+        };
+        const std::uint64_t tokens =
+            std::uint64_t(width / 14) * (height / 14) + 1;
+        if (tokens <= 2000) {
+            context_.batch(run_graph);
+        } else {
+            run_graph();
         }
         context_.download(
             depth.buffer,

@@ -299,7 +299,7 @@ void VulkanOperators::linear(
         &parameters,
         sizeof(parameters),
         divide_up(divide_up(output_columns, 4), 8),
-        divide_up(divide_up(rows, 4), 8));
+        divide_up(divide_up(rows, 7), 8));
     if (gelu) {
         struct GeluParameters {
             std::uint32_t count;

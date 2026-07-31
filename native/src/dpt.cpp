@@ -63,6 +63,7 @@ DptHead::DptHead(
         default:
             throw std::invalid_argument("unsupported DPT encoder");
     }
+    select_convolution_block();
 }
 
 void DptHead::select_convolution_block() {
