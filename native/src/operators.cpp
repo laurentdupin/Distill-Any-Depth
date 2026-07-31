@@ -25,7 +25,9 @@
 #include "linear16_spv.h"
 #include "linear_half_spv.h"
 #include "linear16_half_spv.h"
+#include "linear_vec4_spv.h"
 #include "linear_vec8_spv.h"
+#include "linear_vec16_spv.h"
 #include "prepare_tokens_spv.h"
 #include "position_bicubic_spv.h"
 #include "project_tokens_spv.h"
@@ -85,9 +87,19 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
           dad_linear16_half_spv_size,
           4,
           12)),
+      linear_vec4_(context.create_pipeline(
+          dad_linear_vec4_spv,
+          dad_linear_vec4_spv_size,
+          6,
+          20)),
       linear_vec8_(context.create_pipeline(
           dad_linear_vec8_spv,
           dad_linear_vec8_spv_size,
+          6,
+          20)),
+      linear_vec16_(context.create_pipeline(
+          dad_linear_vec16_spv,
+          dad_linear_vec16_spv_size,
           6,
           20)),
       gelu_(context.create_pipeline(
@@ -221,7 +233,9 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
     linear16_.set_debug_name("linear16");
     linear_half_.set_debug_name("linear_half");
     linear16_half_.set_debug_name("linear16_half");
+    linear_vec4_.set_debug_name("linear_vec4");
     linear_vec8_.set_debug_name("linear_vec8");
+    linear_vec16_.set_debug_name("linear_vec16");
     gelu_.set_debug_name("gelu");
     layer_norm_.set_debug_name("layer_norm");
     add_scaled_.set_debug_name("add_scaled");
@@ -270,7 +284,8 @@ void VulkanOperators::linear(
     std::uint32_t output_columns,
     bool gelu,
     bool block16,
-    bool half_weight) {
+    bool half_weight,
+    std::uint32_t vector_tile) {
     if (rows == 0 || input_columns == 0 || output_columns == 0) {
         throw std::invalid_argument("linear dimensions cannot be zero");
     }
@@ -302,7 +317,9 @@ void VulkanOperators::linear(
             &output, &input, &weight, &bias, &output, &bias};
     context_.dispatch(
         !half_weight
-            ? linear_vec8_
+            ? (vector_tile == 16
+                ? linear_vec16_
+                : (vector_tile == 4 ? linear_vec4_ : linear_vec8_))
             : (block16 ? linear16_half_ : linear_half_),
         descriptors,
         &parameters,
@@ -335,7 +352,8 @@ void VulkanOperators::linear_residual(
     const VulkanBuffer& scale,
     std::uint32_t rows,
     std::uint32_t input_columns,
-    std::uint32_t output_columns) {
+    std::uint32_t output_columns,
+    std::uint32_t vector_tile) {
     if (rows == 0 || input_columns == 0 || output_columns == 0) {
         throw std::invalid_argument(
             "linear-residual dimensions cannot be zero");
@@ -364,7 +382,9 @@ void VulkanOperators::linear_residual(
     } parameters{
         rows, input_columns, output_columns, 0u, 1u};
     context_.dispatch(
-        linear_vec8_,
+        vector_tile == 16
+            ? linear_vec16_
+            : (vector_tile == 4 ? linear_vec4_ : linear_vec8_),
         {
             &output, &input, &weight, &bias, &residual, &scale,
         },

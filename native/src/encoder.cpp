@@ -69,9 +69,102 @@ DinoEncoder::DinoEncoder(
     }
 }
 
-void DinoEncoder::select_linear_tile() {
+void DinoEncoder::select_linear_tile(std::uint32_t rows) {
     linear_block16_ = false;
     linear_half_weight_ = false;
+    const VkDeviceSize work_bytes =
+        std::uint64_t(rows) * embedding_ * 4 * sizeof(float);
+    VulkanBuffer left = context_.create_device_buffer(work_bytes);
+    VulkanBuffer right = context_.create_device_buffer(work_bytes);
+    const auto run = [&](std::uint32_t vector_tile) {
+        const auto start = std::chrono::steady_clock::now();
+        context_.batch([&] {
+            operators_.linear(
+                right,
+                left,
+                buffer(weights_, block_name(0, ".attn.qkv.weight")),
+                buffer(weights_, block_name(0, ".attn.qkv.bias")),
+                rows,
+                embedding_,
+                embedding_ * 3,
+                false,
+                false,
+                false,
+                vector_tile);
+            operators_.linear(
+                left,
+                right,
+                buffer(weights_, block_name(0, ".attn.proj.weight")),
+                buffer(weights_, block_name(0, ".attn.proj.bias")),
+                rows,
+                embedding_,
+                embedding_,
+                false,
+                false,
+                false,
+                vector_tile);
+            operators_.linear(
+                right,
+                left,
+                buffer(weights_, block_name(0, ".mlp.fc1.weight")),
+                buffer(weights_, block_name(0, ".mlp.fc1.bias")),
+                rows,
+                embedding_,
+                embedding_ * 4,
+                true,
+                false,
+                false,
+                vector_tile);
+            operators_.linear(
+                left,
+                right,
+                buffer(weights_, block_name(0, ".mlp.fc2.weight")),
+                buffer(weights_, block_name(0, ".mlp.fc2.bias")),
+                rows,
+                embedding_ * 4,
+                embedding_,
+                false,
+                false,
+                false,
+                vector_tile);
+        });
+        return std::chrono::duration<double, std::micro>(
+            std::chrono::steady_clock::now() - start).count();
+    };
+    struct Candidate {
+        std::uint32_t tile;
+        std::array<double, 3> samples{};
+    };
+    std::array<Candidate, 3> candidates{{
+        {4, {}},
+        {8, {}},
+        {16, {}},
+    }};
+    for (Candidate& candidate : candidates) run(candidate.tile);
+    for (std::size_t sample = 0;
+         sample < candidates[0].samples.size();
+         ++sample) {
+        if ((sample & 1u) == 0) {
+            for (Candidate& candidate : candidates)
+                candidate.samples[sample] = run(candidate.tile);
+        } else {
+            for (auto candidate = candidates.rbegin();
+                 candidate != candidates.rend();
+                 ++candidate)
+                candidate->samples[sample] = run(candidate->tile);
+        }
+    }
+    Candidate* best = nullptr;
+    double best_time = 0.0;
+    for (Candidate& candidate : candidates) {
+        std::sort(candidate.samples.begin(), candidate.samples.end());
+        const double median = candidate.samples[1];
+        if (best == nullptr || median < best_time) {
+            best = &candidate;
+            best_time = median;
+        }
+    }
+    linear_vector_tile_ = best->tile;
     weights_.retain_transformer_precision(false);
     linear_tile_selected_ = true;
 }
@@ -107,7 +200,8 @@ bool DinoEncoder::select_half_attention(
             embedding_ * 3,
             false,
             linear_block16_,
-            linear_half_weight_);
+            linear_half_weight_,
+            linear_vector_tile_);
     });
 
     VulkanBuffer fp32_scratch = context_.create_device_buffer(
@@ -170,7 +264,7 @@ EncoderOutput DinoEncoder::forward(
     const std::uint32_t tokens =
         patch_width * patch_height + 1;
     if (!linear_tile_selected_) {
-        select_linear_tile();
+        select_linear_tile(tokens);
     }
     const std::uint64_t token_elements =
         std::uint64_t(tokens) * embedding_;
@@ -243,7 +337,8 @@ EncoderOutput DinoEncoder::forward(
                 embedding_ * 3,
                 false,
                 linear_block16_,
-                linear_half_weight_);
+                linear_half_weight_,
+                linear_vector_tile_);
             operators_.attention_head64(
                 attention,
                 qkv,
@@ -263,7 +358,8 @@ EncoderOutput DinoEncoder::forward(
                     buffer(weights_, block_name(block, ".ls1.gamma")),
                     tokens,
                     embedding_,
-                    embedding_);
+                    embedding_,
+                    linear_vector_tile_);
             } else {
                 operators_.linear(
                     query,
@@ -277,7 +373,8 @@ EncoderOutput DinoEncoder::forward(
                     embedding_,
                     false,
                     linear_block16_,
-                    linear_half_weight_);
+                    linear_half_weight_,
+                    linear_vector_tile_);
                 operators_.add_scaled(
                     next,
                     current,
@@ -306,7 +403,8 @@ EncoderOutput DinoEncoder::forward(
                 embedding_ * 4,
                 true,
                 linear_block16_,
-                linear_half_weight_);
+                linear_half_weight_,
+                linear_vector_tile_);
             if (!linear_half_weight_) {
                 operators_.linear_residual(
                     next,
@@ -317,7 +415,8 @@ EncoderOutput DinoEncoder::forward(
                     buffer(weights_, block_name(block, ".ls2.gamma")),
                     tokens,
                     embedding_ * 4,
-                    embedding_);
+                    embedding_,
+                    linear_vector_tile_);
             } else {
                 operators_.linear(
                     query,
@@ -329,7 +428,8 @@ EncoderOutput DinoEncoder::forward(
                     embedding_,
                     false,
                     linear_block16_,
-                    linear_half_weight_);
+                    linear_half_weight_,
+                    linear_vector_tile_);
                 operators_.add_scaled(
                     next,
                     current,

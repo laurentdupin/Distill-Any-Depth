@@ -36,6 +36,7 @@ if(DAD_WITH_VULKAN)
                 "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/indexing.h"
                 "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/conv2d_common.glsl"
                 "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/linear_common.glsl"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/linear_vec_common.glsl"
                 "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/project_tokens_common.glsl"
                 "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders/conv_transpose_nonoverlap_common.glsl"
             VERBATIM
@@ -58,7 +59,9 @@ if(DAD_WITH_VULKAN)
     dad_compile_shader(linear16)
     dad_compile_shader(linear_half)
     dad_compile_shader(linear16_half)
+    dad_compile_shader(linear_vec4)
     dad_compile_shader(linear_vec8)
+    dad_compile_shader(linear_vec16)
     dad_compile_shader(gelu)
     dad_compile_shader(layer_norm)
     dad_compile_shader(add_scaled)

@@ -20,7 +20,8 @@ public:
         std::uint32_t output_columns,
         bool gelu,
         bool block16 = false,
-        bool half_weight = false);
+        bool half_weight = false,
+        std::uint32_t vector_tile = 8);
 
     void linear_residual(
         VulkanBuffer& output,
@@ -31,7 +32,8 @@ public:
         const VulkanBuffer& scale,
         std::uint32_t rows,
         std::uint32_t input_columns,
-        std::uint32_t output_columns);
+        std::uint32_t output_columns,
+        std::uint32_t vector_tile = 8);
 
     void layer_norm(
         VulkanBuffer& output,
@@ -154,7 +156,9 @@ private:
     VulkanPipeline linear16_;
     VulkanPipeline linear_half_;
     VulkanPipeline linear16_half_;
+    VulkanPipeline linear_vec4_;
     VulkanPipeline linear_vec8_;
+    VulkanPipeline linear_vec16_;
     VulkanPipeline gelu_;
     VulkanPipeline layer_norm_;
     VulkanPipeline add_scaled_;
