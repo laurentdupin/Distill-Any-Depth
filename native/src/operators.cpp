@@ -329,7 +329,9 @@ void VulkanOperators::linear(
             : divide_up(output_columns, 64),
         half_weight
             ? divide_up(divide_up(rows, 4), 8)
-            : divide_up(rows, 40));
+            : (vector_tile == 16
+                ? divide_up(rows, 64)
+                : divide_up(rows, 40)));
     if (gelu && half_weight) {
         struct GeluParameters {
             std::uint32_t count;
@@ -391,7 +393,9 @@ void VulkanOperators::linear_residual(
         &parameters,
         sizeof(parameters),
         divide_up(output_columns, 64),
-        divide_up(rows, 40));
+        vector_tile == 16
+            ? divide_up(rows, 64)
+            : divide_up(rows, 40));
 }
 
 void VulkanOperators::layer_norm(

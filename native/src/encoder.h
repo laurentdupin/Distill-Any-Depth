@@ -28,6 +28,8 @@ public:
         GpuModel& weights,
         VulkanOperators& operators);
 
+    void prepare(std::uint32_t width, std::uint32_t height);
+
     EncoderOutput forward(
         const VulkanBuffer& image,
         std::uint32_t width,

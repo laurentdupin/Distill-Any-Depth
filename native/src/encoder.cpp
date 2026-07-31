@@ -175,6 +175,19 @@ const VulkanBuffer& DinoEncoder::linear_weight(
     return linear_half_weight_ ? tensor.half_buffer : tensor.buffer;
 }
 
+void DinoEncoder::prepare(
+    std::uint32_t width,
+    std::uint32_t height) {
+    if (width == 0 || height == 0 || width % 14 != 0 ||
+        height % 14 != 0) {
+        throw std::invalid_argument(
+            "encoder dimensions must be positive multiples of 14");
+    }
+    if (!linear_tile_selected_) {
+        select_linear_tile((width / 14) * (height / 14) + 1);
+    }
+}
+
 bool DinoEncoder::select_half_attention(
     const VulkanBuffer& current,
     VulkanBuffer& normalized,
@@ -263,9 +276,7 @@ EncoderOutput DinoEncoder::forward(
     const std::uint32_t patch_height = height / 14;
     const std::uint32_t tokens =
         patch_width * patch_height + 1;
-    if (!linear_tile_selected_) {
-        select_linear_tile(tokens);
-    }
+    prepare(width, height);
     const std::uint64_t token_elements =
         std::uint64_t(tokens) * embedding_;
     const VkDeviceSize token_bytes = token_elements * sizeof(float);
