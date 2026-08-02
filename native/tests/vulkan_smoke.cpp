@@ -81,6 +81,19 @@ int main() {
     }
 
     dad::VulkanOperators operators(context);
+    {
+        const std::vector<float> raw_depth{2.0f, 3.0f, 5.0f, 10.0f};
+        auto depth = context.create_device_buffer(raw_depth.size() * sizeof(float));
+        auto range = context.create_device_buffer(2u * sizeof(float));
+        context.upload(depth, raw_depth.data(), raw_depth.size() * sizeof(float));
+        operators.reduce_minmax(depth, range, static_cast<std::uint32_t>(raw_depth.size()));
+        operators.normalize_relative(depth, range, static_cast<std::uint32_t>(raw_depth.size()));
+        std::vector<float> normalized(raw_depth.size());
+        context.download(depth, normalized.data(), normalized.size() * sizeof(float));
+        const std::vector<float> expected{0.0f, 0.125f, 0.375f, 1.0f};
+        for (std::size_t index = 0; index < expected.size(); ++index)
+            expect_near(normalized[index], expected[index], 1.0e-6f);
+    }
     const std::uint32_t rows = 3;
     const std::uint32_t input_columns = 19;
     const std::uint32_t output_columns = 7;
