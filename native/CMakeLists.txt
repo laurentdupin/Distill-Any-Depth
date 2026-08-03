@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 
 project(distill_any_depth_c VERSION 0.1.0 LANGUAGES C CXX)
+include("${CMAKE_CURRENT_LIST_DIR}/../../native_support/InferBridgeNativeHarnessSupport.cmake")
+link_libraries(InferBridge::NativeHarnessSupport)
 
 if(MSVC)
     # The distributable must be one DLL, so do not require the separately

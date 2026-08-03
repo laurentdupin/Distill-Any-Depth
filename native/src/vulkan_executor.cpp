@@ -7,6 +7,7 @@
 #include "model.h"
 #include "operators.h"
 #include "vulkan.h"
+#include "inferbridge/native_harness_resource_lifetime.h"
 
 #include <array>
 #include <atomic>
@@ -407,6 +408,7 @@ class VulkanGpuJob final : public GpuJob {
 public:
     VulkanGpuJob(
         std::shared_ptr<GpuSlot> slot,
+        inferbridge::native_harness::ResourceLifetimeDomainPtr lifetime,
         VulkanBuffer output_buffer,
         VulkanImage input_image,
         VulkanImage output_image,
@@ -417,6 +419,7 @@ public:
         std::uint64_t source_frame_id,
         std::uint64_t timestamp_ns)
         : slot_(std::move(slot)),
+          lifetime_(std::move(lifetime)),
           output_buffer_(std::move(output_buffer)),
           input_image_(std::move(input_image)),
           output_image_(std::move(output_image)),
@@ -428,16 +431,12 @@ public:
           timestamp_ns_(timestamp_ns) {}
 
     ~VulkanGpuJob() override {
-        try {
-            submission_.wait();
-        } catch (...) {
-        }
-        // Release per-submission descriptors and the imported input before
-        // another job can claim and record work against this output slot.
-        submission_ = VulkanSubmission{};
-        output_image_ = VulkanImage{};
-        input_image_ = VulkanImage{};
-        output_buffer_ = VulkanBuffer{};
+        inferbridge::native_harness::wait_then_retire(
+            lifetime_, submission_, [this] {
+                output_image_ = VulkanImage{};
+                input_image_ = VulkanImage{};
+                output_buffer_ = VulkanBuffer{};
+            });
         if (slot_) slot_->occupied.store(false, std::memory_order_release);
     }
 
@@ -481,6 +480,7 @@ public:
 
 private:
     std::shared_ptr<GpuSlot> slot_;
+    inferbridge::native_harness::ResourceLifetimeDomainPtr lifetime_;
     // Per-job Vulkan imports outlive the submission that references them.
     VulkanBuffer output_buffer_;
     VulkanImage input_image_;
@@ -592,6 +592,7 @@ public:
         throw std::runtime_error(
             "D3D12 GPU submission is only available on Windows");
 #else
+        auto lifetime_guard = lifetime_->acquire();
         const GpuCapabilities capabilities = gpu_capabilities();
         if (capabilities.flags == 0) {
             throw std::runtime_error(
@@ -698,6 +699,7 @@ public:
                 });
             return std::make_unique<VulkanGpuJob>(
                 slot,
+                lifetime_,
                 std::move(output),
                 VulkanImage{},
                 VulkanImage{},
@@ -722,6 +724,7 @@ public:
         throw std::runtime_error(
             "D3D12 GPU texture submission is only available on Windows");
 #else
+        auto lifetime_guard = lifetime_->acquire();
         const GpuCapabilities capabilities = gpu_capabilities();
         const std::uint64_t required =
             DAD_GPU_CAP_D3D12_SHARED_TEXTURE_INPUT |
@@ -858,6 +861,7 @@ public:
                 });
             return std::make_unique<VulkanGpuJob>(
                 slot,
+                lifetime_,
                 VulkanBuffer{},
                 std::move(input),
                 std::move(output),
@@ -892,6 +896,8 @@ private:
     ComPtr<ID3D12Device> d3d12_device_;
     std::array<
         std::shared_ptr<GpuSlot>, kGpuSlotCount> gpu_slots_;
+    inferbridge::native_harness::ResourceLifetimeDomainPtr lifetime_ =
+        inferbridge::native_harness::make_resource_lifetime_domain();
     std::atomic<std::uint32_t> next_gpu_slot_{0};
 #endif
 };
