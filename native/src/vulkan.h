@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
