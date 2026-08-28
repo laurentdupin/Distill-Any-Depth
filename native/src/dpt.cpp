@@ -1,4 +1,5 @@
 #include "dpt.h"
+#include "inferbridge/native_harness_precision.h"
 
 #include <algorithm>
 #include <array>
@@ -68,14 +69,13 @@ DptHead::DptHead(
 
 void DptHead::select_convolution_block() {
     convolution_block8_ = false;
-    convolution_half_weight_ = false;
+    convolution_half_weight_ = inferbridge::native::select_fp16_weights(false);
     constexpr std::uint32_t side = 16;
     const VkDeviceSize bytes =
         elements(side, side, features_) * sizeof(float);
     VulkanBuffer input = context_.create_device_buffer(bytes);
     VulkanBuffer output = context_.create_device_buffer(bytes);
-    const VulkanBuffer& convolution_weight = weight(
-        weights_,
+    const VulkanBuffer& convolution_weight = selected_weight(
         "depth_head.scratch.refinenet1.resConfUnit2.conv1.weight");
     const VulkanBuffer& convolution_bias = weight(
         weights_,
@@ -87,7 +87,7 @@ void DptHead::select_convolution_block() {
                 operators_.conv2d(
                     output, input, convolution_weight, convolution_bias,
                     side, side, features_, features_, 3, 1, 1, true,
-                    false, false, tiled);
+                    false, convolution_half_weight_, tiled);
             }
         });
         return std::chrono::duration<double, std::micro>(
@@ -104,7 +104,7 @@ void DptHead::select_convolution_block() {
     std::sort(direct.begin(), direct.end());
     std::sort(tiled.begin(), tiled.end());
     convolution_tiled_ = tiled[1] < direct[1] * 0.95;
-    weights_.retain_dpt_precision(false);
+    weights_.retain_dpt_precision(convolution_half_weight_);
     convolution_block_selected_ = true;
 }
 

@@ -1,4 +1,5 @@
 #include "encoder.h"
+#include "inferbridge/native_harness_precision.h"
 
 #include <algorithm>
 #include <array>
@@ -71,7 +72,7 @@ DinoEncoder::DinoEncoder(
 
 void DinoEncoder::select_linear_tile(std::uint32_t rows) {
     linear_block16_ = false;
-    linear_half_weight_ = false;
+    linear_half_weight_ = inferbridge::native::select_fp16_weights(false);
     const VkDeviceSize work_bytes =
         std::uint64_t(rows) * embedding_ * 4 * sizeof(float);
     VulkanBuffer left = context_.create_device_buffer(work_bytes);
@@ -82,50 +83,50 @@ void DinoEncoder::select_linear_tile(std::uint32_t rows) {
             operators_.linear(
                 right,
                 left,
-                buffer(weights_, block_name(0, ".attn.qkv.weight")),
+                linear_weight(block_name(0, ".attn.qkv.weight")),
                 buffer(weights_, block_name(0, ".attn.qkv.bias")),
                 rows,
                 embedding_,
                 embedding_ * 3,
                 false,
                 false,
-                false,
+                linear_half_weight_,
                 vector_tile);
             operators_.linear(
                 left,
                 right,
-                buffer(weights_, block_name(0, ".attn.proj.weight")),
+                linear_weight(block_name(0, ".attn.proj.weight")),
                 buffer(weights_, block_name(0, ".attn.proj.bias")),
                 rows,
                 embedding_,
                 embedding_,
                 false,
                 false,
-                false,
+                linear_half_weight_,
                 vector_tile);
             operators_.linear(
                 right,
                 left,
-                buffer(weights_, block_name(0, ".mlp.fc1.weight")),
+                linear_weight(block_name(0, ".mlp.fc1.weight")),
                 buffer(weights_, block_name(0, ".mlp.fc1.bias")),
                 rows,
                 embedding_,
                 embedding_ * 4,
                 true,
                 false,
-                false,
+                linear_half_weight_,
                 vector_tile);
             operators_.linear(
                 left,
                 right,
-                buffer(weights_, block_name(0, ".mlp.fc2.weight")),
+                linear_weight(block_name(0, ".mlp.fc2.weight")),
                 buffer(weights_, block_name(0, ".mlp.fc2.bias")),
                 rows,
                 embedding_ * 4,
                 embedding_,
                 false,
                 false,
-                false,
+                linear_half_weight_,
                 vector_tile);
         });
         return std::chrono::duration<double, std::micro>(
@@ -165,7 +166,7 @@ void DinoEncoder::select_linear_tile(std::uint32_t rows) {
         }
     }
     linear_vector_tile_ = best->tile;
-    weights_.retain_transformer_precision(false);
+    weights_.retain_transformer_precision(linear_half_weight_);
     linear_tile_selected_ = true;
 }
 
@@ -302,7 +303,7 @@ EncoderOutput DinoEncoder::forward(
             height,
             embedding_);
     });
-    const bool half_attention = false;
+    const bool half_attention = inferbridge::native::select_fp16_weights(false);
     const VkDeviceSize attention_score_bytes = half_attention
         ? std::uint64_t(heads_) * tokens *
             ((std::uint64_t(tokens) + 1) / 2) *
