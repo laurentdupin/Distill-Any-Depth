@@ -69,7 +69,7 @@ DptHead::DptHead(
 
 void DptHead::select_convolution_block() {
     convolution_block8_ = false;
-    convolution_half_weight_ = inferbridge::native::select_fp16_weights(false);
+    convolution_half_weight_ = weights_.select_fp16(false);
     constexpr std::uint32_t side = 16;
     const VkDeviceSize bytes =
         elements(side, side, features_) * sizeof(float);

@@ -1,6 +1,7 @@
 #include "inferbridge_harness.h"
 
 #include "distill_any_depth.h"
+#include "inferbridge/native_harness_precision.h"
 
 #include <algorithm>
 #include <atomic>
@@ -276,6 +277,13 @@ ibrh_result IBRH_CALL model_load(
             "DAD model path is missing");
     const std::string path = copy_string(request->model_path);
     const std::string parameters = copy_string(request->parameters_json);
+    inferbridge::native::Precision precision;
+    try {
+        precision = inferbridge::native::precision_from_parameters_json(parameters);
+    } catch (const std::exception& error) {
+        return fail(runtime, IBRH_ERROR_INVALID_ARGUMENT, error.what());
+    }
+    const inferbridge::native::ScopedPrecisionRequest precision_scope(precision);
     auto* model = new (std::nothrow) ibrh_model();
     if (model == nullptr) return IBRH_ERROR_INTERNAL;
     model->runtime = runtime;
@@ -389,7 +397,10 @@ ibrh_result IBRH_CALL submit(
             static_cast<int32_t>(size), wait.native_handle, wait.value,
             destination.native_handle, destination.width, destination.height,
             signal.native_handle, signal.value,
-            request->source_frame_id, request->timestamp_ns};
+            request->source_frame_id, request->timestamp_ns,
+            input.auxiliary_handle != 0 ? input.auxiliary_handle : input.native_handle,
+            destination.auxiliary_handle != 0
+                ? destination.auxiliary_handle : destination.native_handle};
         dad_gpu_job* native_job = nullptr;
         const dad_status status = dad_submit_d3d12_texture_binding(
             model->context, &native_request, &native_job);

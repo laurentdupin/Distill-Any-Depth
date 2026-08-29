@@ -172,6 +172,9 @@ public:
     ~VulkanContext();
 
     const std::string& device_name() const { return device_name_; }
+    bool supports_packed_int8_dot() const {
+        return packed_int8_dot_supported_;
+    }
     const VulkanExternalCapabilities& external_capabilities() const {
         return external_capabilities_;
     }
@@ -382,6 +385,7 @@ private:
     VkQueryPool profile_query_pool_ = VK_NULL_HANDLE;
     bool profile_dispatches_ = false;
     bool subgroup_size_forced_ = false;
+    bool packed_int8_dot_supported_ = false;
     float timestamp_period_ns_ = 0.0f;
     std::unordered_map<std::string, ProfileStat> profile_stats_;
     VkCommandBuffer batch_command_ = VK_NULL_HANDLE;

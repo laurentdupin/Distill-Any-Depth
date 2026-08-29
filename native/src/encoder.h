@@ -44,6 +44,11 @@ private:
         VulkanBuffer& attention,
         std::uint32_t tokens);
     const VulkanBuffer& linear_weight(const std::string& name) const;
+    void linear(
+        VulkanBuffer& output, const VulkanBuffer& input,
+        const std::string& weight_name, const std::string& bias_name,
+        std::uint32_t rows, std::uint32_t input_columns,
+        std::uint32_t output_columns, bool gelu = false);
 
     dad_encoder encoder_;
     VulkanContext& context_;

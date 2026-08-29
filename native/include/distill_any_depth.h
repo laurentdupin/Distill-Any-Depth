@@ -158,6 +158,8 @@ typedef struct dad_d3d12_texture_binding_request {
     uint64_t signal_fence_value;
     uint64_t source_frame_id;
     uint64_t timestamp_ns;
+    uint64_t input_texture_identity;
+    uint64_t output_texture_identity;
 } dad_d3d12_texture_binding_request;
 
 typedef struct dad_gpu_job_status {

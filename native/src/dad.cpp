@@ -388,17 +388,26 @@ dad_status DAD_CALL dad_submit_d3d12_texture_binding(
     if (!context || !request || !job)
         return fail(DAD_STATUS_INVALID_ARGUMENT, "null D3D12 texture binding argument");
     *job = nullptr;
-    if (request->struct_size < sizeof(*request) || request->abi_version != DAD_ABI_VERSION)
+    constexpr std::size_t binding_v1_size =
+        offsetof(dad_d3d12_texture_binding_request, input_texture_identity);
+    if (request->struct_size < binding_v1_size || request->abi_version != DAD_ABI_VERSION)
         return fail(DAD_STATUS_INVALID_ARGUMENT, "invalid D3D12 texture binding request");
     return protect([&] {
         dad::GpuTextureSubmitRequest native;
         native.shared_texture_handle = static_cast<std::uintptr_t>(request->input_texture_handle);
+        const bool has_stable_identities = request->struct_size >= sizeof(*request);
+        native.shared_texture_identity = has_stable_identities &&
+                request->input_texture_identity != 0
+            ? request->input_texture_identity : request->input_texture_handle;
         native.width = request->input_width; native.height = request->input_height;
         native.pixel_format = static_cast<dad_gpu_pixel_format>(request->input_pixel_format);
         native.input_size = request->input_size;
         native.wait_fence_handle = static_cast<std::uintptr_t>(request->wait_fence_handle);
         native.wait_fence_value = request->wait_fence_value;
         native.output_texture_handle = static_cast<std::uintptr_t>(request->output_texture_handle);
+        native.output_texture_identity = has_stable_identities &&
+                request->output_texture_identity != 0
+            ? request->output_texture_identity : request->output_texture_handle;
         native.output_width = request->output_width; native.output_height = request->output_height;
         native.signal_fence_handle = static_cast<std::uintptr_t>(request->signal_fence_handle);
         native.signal_fence_value = request->signal_fence_value;

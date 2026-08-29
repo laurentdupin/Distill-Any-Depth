@@ -96,6 +96,13 @@ if(DAD_WITH_VULKAN)
     dad_compile_shader(relu)
     dad_compile_shader(preprocess_rgba)
     dad_compile_shader(preprocess_texture)
+    foreach(SHARED_SHADER quantize_rows_int8 linear_int8_tiled)
+        inferbridge_compile_native_support_shader(
+            NAME "${SHARED_SHADER}" PREFIX dad
+            GENERATED_DIR "${DAD_GENERATED_DIR}"
+            EMBED_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_binary.cmake"
+            OUT_VAR DAD_SHADER_HEADERS)
+    endforeach()
 endif()
 
 add_library(distill_any_depth SHARED
