@@ -15,6 +15,7 @@ endif()
 
 option(DAD_BUILD_TESTS "Build the C ABI and preprocessing tests" ON)
 option(DAD_WITH_VULKAN "Build the dependency-free Vulkan executor" ON)
+option(DAD_WITH_METAL "Build the Apple Metal/MPSGraph executor" ${APPLE})
 option(DAD_BUILD_TOOLS "Build native command-line tools" ON)
 
 if(DAD_WITH_VULKAN)
@@ -107,6 +108,7 @@ endif()
 
 add_library(distill_any_depth SHARED
     src/dad.cpp
+    src/executor_factory.cpp
     src/image.cpp
     src/inferbridge_harness.cpp
 )
@@ -125,15 +127,19 @@ target_compile_definitions(distill_any_depth
         DAD_BUILD_DLL
         INFERBRIDGE_HARNESS_BUILDING_LIBRARY
         $<$<BOOL:${DAD_WITH_VULKAN}>:DAD_WITH_VULKAN=1>
+        $<$<BOOL:${DAD_WITH_METAL}>:DAD_WITH_METAL=1>
 )
 set_target_properties(distill_any_depth PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN YES
 )
 
+if(DAD_WITH_VULKAN OR DAD_WITH_METAL)
+    target_sources(distill_any_depth PRIVATE src/model.cpp)
+endif()
+
 if(DAD_WITH_VULKAN)
     target_sources(distill_any_depth PRIVATE
-        src/model.cpp
         src/gpu_model.cpp
         src/encoder.cpp
         src/dpt.cpp
@@ -148,6 +154,16 @@ if(DAD_WITH_VULKAN)
     if(WIN32)
         target_link_libraries(distill_any_depth PRIVATE d3d12 dxgi)
     endif()
+endif()
+
+if(DAD_WITH_METAL)
+    if(NOT APPLE)
+        message(FATAL_ERROR "DAD_WITH_METAL requires an Apple platform")
+    endif()
+    target_sources(distill_any_depth PRIVATE src/metal_executor.mm)
+    target_link_libraries(distill_any_depth PRIVATE
+        "-framework Foundation" "-framework Metal"
+        "-framework MetalPerformanceShadersGraph")
 endif()
 
 include(GNUInstallDirs)

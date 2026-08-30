@@ -293,9 +293,14 @@ ibrh_result IBRH_CALL model_load(
             runtime, IBRH_ERROR_INVALID_ARGUMENT,
             "DAD Size must be an integer from 1 to 4096");
     }
+    uint32_t create_flags = 0u;
+    if (precision == inferbridge::native::Precision::fp16)
+        create_flags |= DAD_CREATE_FORCE_FP16;
+    else if (precision == inferbridge::native::Precision::int8)
+        create_flags |= DAD_CREATE_FORCE_INT8;
     const dad_create_options options{
         sizeof(options), DAD_ABI_VERSION, encoder(path, parameters),
-        runtime->vulkan_device_index, 0u};
+        runtime->vulkan_device_index, create_flags};
     const dad_status status =
         dad_create(path.c_str(), &options, &model->context);
     if (status != DAD_STATUS_OK) {

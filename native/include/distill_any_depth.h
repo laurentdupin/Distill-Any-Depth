@@ -55,6 +55,13 @@ typedef struct dad_create_options {
     uint32_t flags;
 } dad_create_options;
 
+enum {
+    DAD_CREATE_FORCE_FP16 = 1u << 1u,
+    DAD_CREATE_FORCE_INT8 = 1u << 2u,
+    DAD_CREATE_FORCE_VULKAN = 1u << 4u,
+    DAD_CREATE_FORCE_METAL = 1u << 5u
+};
+
 typedef struct dad_image_shape {
     int32_t width;
     int32_t height;
@@ -70,7 +77,11 @@ enum {
     DAD_GPU_CAP_NO_HOST_PIXEL_STAGING = 1ull << 6u,
     DAD_GPU_CAP_NO_HOST_DEPTH_STAGING = 1ull << 7u,
     DAD_GPU_CAP_D3D12_SHARED_TEXTURE_INPUT = 1ull << 8u,
-    DAD_GPU_CAP_D3D12_SHARED_TEXTURE_OUTPUT = 1ull << 9u
+    DAD_GPU_CAP_D3D12_SHARED_TEXTURE_OUTPUT = 1ull << 9u,
+    DAD_GPU_CAP_METAL_TEXTURE_INPUT = 1ull << 10u,
+    DAD_GPU_CAP_METAL_SHARED_EVENT_WAIT = 1ull << 11u,
+    DAD_GPU_CAP_METAL_TEXTURE_OUTPUT = 1ull << 12u,
+    DAD_GPU_CAP_METAL_SHARED_EVENT_SIGNAL = 1ull << 13u
 };
 
 typedef enum dad_gpu_pixel_format {

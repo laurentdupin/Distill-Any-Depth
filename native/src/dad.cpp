@@ -90,14 +90,14 @@ dad_status protect(Function&& function) {
 
 }  // namespace
 
-#if !defined(DAD_WITH_VULKAN)
+#if !defined(DAD_WITH_VULKAN) && !defined(DAD_WITH_METAL)
 namespace dad {
 std::unique_ptr<Executor> create_executor(
     const std::string&,
     dad_encoder,
-    int) {
+    int, std::uint32_t, const std::string&) {
     throw std::runtime_error(
-        "this DLL was built without Vulkan");
+        "this library was built without a GPU executor");
 }
 GpuCapabilities probe_gpu_capabilities(int) {
     return {};
@@ -189,13 +189,20 @@ dad_status DAD_CALL dad_create(
     if (!supported_encoder(options->encoder)) {
         return fail(DAD_STATUS_INVALID_ARGUMENT, "unsupported encoder");
     }
+    constexpr uint32_t supported_flags = DAD_CREATE_FORCE_FP16 |
+        DAD_CREATE_FORCE_INT8 | DAD_CREATE_FORCE_VULKAN |
+        DAD_CREATE_FORCE_METAL;
+    if ((options->flags & ~supported_flags) != 0u)
+        return fail(DAD_STATUS_INVALID_ARGUMENT, "unsupported create flags");
     return protect([&] {
         auto result = std::make_unique<dad_context>();
         result->executor = std::shared_ptr<dad::Executor>(
             dad::create_executor(
                 model_path_utf8,
                 options->encoder,
-                options->vulkan_device_index));
+                options->vulkan_device_index,
+                options->flags,
+                std::string()));
         *context = result.release();
     });
 }

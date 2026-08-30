@@ -102,11 +102,21 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    uint32_t flags = 0u;
+    const char* precision = getenv("DAD_PRECISION");
+    if (precision != NULL && strcmp(precision, "fp16") == 0) {
+        flags = DAD_CREATE_FORCE_FP16;
+    } else if (precision != NULL && strcmp(precision, "fp32") != 0) {
+        fprintf(stderr, "DAD_PRECISION must be fp32 or fp16\n");
+        free(input);
+        free(output);
+        return 2;
+    }
     const dad_create_options options = {
         sizeof(dad_create_options),
         DAD_ABI_VERSION,
         encoder,
-        0,
+        flags,
         0,
     };
     dad_context* context = NULL;
