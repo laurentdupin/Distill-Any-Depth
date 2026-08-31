@@ -1,6 +1,7 @@
 #include "executor.h"
 #include "image.h"
 #include "model.h"
+#include "inferbridge/native_harness_metal_texture.h"
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -759,17 +760,13 @@ public:
         id<MTLSharedEvent> input_event,
         id<MTLTexture> output_texture,
         id<MTLSharedEvent> output_event,
-        id<MTLBuffer> normalized_input,
-        id<MTLBuffer> presentation_output,
-        MPSGraphTensorData* input_data,
-        MPSGraphTensorData* output_data,
+        std::shared_ptr<inferbridge::native_harness::metal::TensorPool::Lease>
+            tensor_lease,
         id<MTLCommandBuffer> completion,
         std::uint64_t signal_value)
         : input_texture_(input_texture), input_event_(input_event),
           output_texture_(output_texture), output_event_(output_event),
-          normalized_input_(normalized_input),
-          presentation_output_(presentation_output),
-          input_data_(input_data), output_data_(output_data),
+          tensor_lease_(std::move(tensor_lease)),
           completion_(completion), signal_value_(signal_value) {}
 
     ~MetalGpuJob() override {
@@ -807,10 +804,8 @@ private:
     id<MTLSharedEvent> input_event_ = nil;
     id<MTLTexture> output_texture_ = nil;
     id<MTLSharedEvent> output_event_ = nil;
-    id<MTLBuffer> normalized_input_ = nil;
-    id<MTLBuffer> presentation_output_ = nil;
-    MPSGraphTensorData* input_data_ = nil;
-    MPSGraphTensorData* output_data_ = nil;
+    std::shared_ptr<inferbridge::native_harness::metal::TensorPool::Lease>
+        tensor_lease_;
     id<MTLCommandBuffer> completion_ = nil;
     std::uint64_t signal_value_ = 0u;
     std::atomic<bool> cancelled_{false};
@@ -959,16 +954,6 @@ public:
         const ImageShape network = network_shape(
             static_cast<int>(request.width),
             static_cast<int>(request.height), request.input_size);
-        const std::uint64_t normalized_bytes =
-            static_cast<std::uint64_t>(network.width) * network.height *
-            3u * sizeof(float);
-        const std::uint64_t presentation_bytes =
-            static_cast<std::uint64_t>(network.width) * network.height *
-            sizeof(float);
-        if (normalized_bytes > std::numeric_limits<NSUInteger>::max() ||
-            presentation_bytes > std::numeric_limits<NSUInteger>::max())
-            throw std::overflow_error("Metal inference tensors are too large");
-
         std::lock_guard<std::mutex> guard(mutex_);
         if (!external_device_adopted_) {
             if (input_texture.device.registryID != device_.registryID)
@@ -987,16 +972,14 @@ public:
         @autoreleasepool {
             MetalPlan& plan = get_presentation_plan(
                 network.width, network.height);
-            id<MTLBuffer> normalized = [device_
-                newBufferWithLength:static_cast<NSUInteger>(normalized_bytes)
-                options:MTLResourceStorageModePrivate];
-            id<MTLBuffer> presentation = [device_
-                newBufferWithLength:static_cast<NSUInteger>(presentation_bytes)
-                options:MTLResourceStorageModePrivate];
-            if (normalized == nil || presentation == nil)
-                throw std::bad_alloc();
+            auto tensors = tensor_pool_->acquire(
+                network.width, network.height);
+            id<MTLBuffer> normalized = tensors->input();
+            id<MTLBuffer> presentation = tensors->output();
 
             id<MTLCommandBuffer> preprocess_command = [queue_ commandBuffer];
+            inferbridge::native_harness::metal::label_command(
+                preprocess_command, "Distill Any Depth", "Preprocess");
             if (wait_event != nil) {
                 [preprocess_command encodeWaitForEvent:wait_event
                                                  value:request.wait_fence_value];
@@ -1006,6 +989,8 @@ public:
             if (preprocess_encoder == nil)
                 throw std::runtime_error(
                     "could not encode DAD Metal preprocessing");
+            inferbridge::native_harness::metal::label_encoder(
+                preprocess_encoder, "Distill Any Depth", "Preprocess");
             struct PreprocessParameters {
                 std::uint32_t source_width;
                 std::uint32_t source_height;
@@ -1027,14 +1012,8 @@ public:
             [preprocess_encoder endEncoding];
             [preprocess_command commit];
 
-            MPSGraphTensorData* input_data = [[MPSGraphTensorData alloc]
-                initWithMTLBuffer:normalized
-                shape:shape({1, 3, network.height, network.width})
-                dataType:MPSDataTypeFloat32];
-            MPSGraphTensorData* output_data = [[MPSGraphTensorData alloc]
-                initWithMTLBuffer:presentation
-                shape:shape({1, 1, network.height, network.width})
-                dataType:MPSDataTypeFloat32];
+            MPSGraphTensorData* input_data = tensors->input_data();
+            MPSGraphTensorData* output_data = tensors->output_data();
             MPSGraphExecutableExecutionDescriptor* execution =
                 [MPSGraphExecutableExecutionDescriptor new];
             execution.waitUntilCompleted = NO;
@@ -1048,11 +1027,15 @@ public:
                     "Metal graph did not bind its presentation output");
 
             id<MTLCommandBuffer> completion = [queue_ commandBuffer];
+            inferbridge::native_harness::metal::label_command(
+                completion, "Distill Any Depth", "Present Depth");
             id<MTLComputeCommandEncoder> copy_encoder =
                 [completion computeCommandEncoder];
             if (copy_encoder == nil)
                 throw std::runtime_error(
                     "could not encode DAD Metal output copy");
+            inferbridge::native_harness::metal::label_encoder(
+                copy_encoder, "Distill Any Depth", "Present Depth");
             [copy_encoder setComputePipelineState:copy_pipeline_];
             [copy_encoder setBuffer:presentation offset:0u atIndex:0u];
             [copy_encoder setTexture:output_texture atIndex:0u];
@@ -1077,7 +1060,7 @@ public:
             [completion commit];
             return std::make_unique<MetalGpuJob>(
                 input_texture, wait_event, output_texture, signal_event,
-                normalized, presentation, input_data, output_data,
+                std::move(tensors),
                 completion, request.signal_fence_value);
         }
     }
@@ -1098,6 +1081,11 @@ private:
         graph_device_ = [MPSGraphDevice deviceWithMTLDevice:device_];
         if (queue_ == nil || graph_device_ == nil)
             throw std::runtime_error("could not initialize the Metal executor");
+        inferbridge::native_harness::metal::label_queue(
+            queue_, "Distill Any Depth");
+        tensor_pool_ = std::make_shared<
+            inferbridge::native_harness::metal::TensorPool>(
+                device_, "Distill Any Depth");
 
         NSError* error = nil;
         NSString* source = [NSString stringWithUTF8String:kMetalTransferKernels];
@@ -1285,6 +1273,8 @@ private:
     id<MTLComputePipelineState> preprocess_pipeline_ = nil;
     id<MTLComputePipelineState> copy_pipeline_ = nil;
     MPSGraphDevice* graph_device_ = nil;
+    std::shared_ptr<inferbridge::native_harness::metal::TensorPool>
+        tensor_pool_;
     std::unordered_map<PlanKey, MetalPlan, PlanKeyHash> plans_;
     std::mutex mutex_;
     std::atomic<std::uint64_t> upload_bytes_{0u};
