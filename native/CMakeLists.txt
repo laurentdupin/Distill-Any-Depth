@@ -161,6 +161,8 @@ if(DAD_WITH_METAL)
         message(FATAL_ERROR "DAD_WITH_METAL requires an Apple platform")
     endif()
     target_sources(distill_any_depth PRIVATE src/metal_executor.mm)
+    set_source_files_properties(src/metal_executor.mm PROPERTIES
+        COMPILE_OPTIONS "-fobjc-arc")
     target_link_libraries(distill_any_depth PRIVATE
         "-framework Foundation" "-framework Metal"
         "-framework MetalPerformanceShadersGraph")
