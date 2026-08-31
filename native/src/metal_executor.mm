@@ -1247,19 +1247,10 @@ private:
         if (@available(macOS 14.0, *)) {
             const ModelDerivation& derivation = model_.derivation();
             if (!derivation.present) return nil;
-            NSString* directory = nil;
-            if (!cache_path_.empty()) {
-                directory = [[NSString stringWithUTF8String:cache_path_.c_str()]
-                    stringByAppendingPathComponent:@"DADMetalGraphCache-v1"];
-            } else {
-                NSArray<NSString*>* cache_directories =
-                    NSSearchPathForDirectoriesInDomains(
-                        NSCachesDirectory, NSUserDomainMask, YES);
-                if (cache_directories.count == 0u) return nil;
-                directory = [cache_directories.firstObject
-                    stringByAppendingPathComponent:
-                        @"DepthExtractor/DADMetalGraphCache-v1"];
-            }
+            if (cache_path_.empty()) return nil;
+            NSString* directory = [[NSString
+                stringWithUTF8String:cache_path_.c_str()]
+                stringByAppendingPathComponent:@"DADMetalGraphCache-v1"];
             NSError* error = nil;
             if (![[NSFileManager defaultManager]
                     createDirectoryAtPath:directory
