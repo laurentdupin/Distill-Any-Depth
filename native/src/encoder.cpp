@@ -77,7 +77,7 @@ void DinoEncoder::select_linear_tile(std::uint32_t rows) {
         std::uint64_t(rows) * embedding_ * 4 * sizeof(float);
     VulkanBuffer left = context_.create_device_buffer(work_bytes);
     VulkanBuffer right = context_.create_device_buffer(work_bytes);
-    const auto run = [&](std::uint32_t vector_tile) {
+    const auto run = [&](std::uint32_t vector_tile, bool block16) {
         const auto start = std::chrono::steady_clock::now();
         context_.batch([&] {
             operators_.linear(
@@ -89,7 +89,7 @@ void DinoEncoder::select_linear_tile(std::uint32_t rows) {
                 embedding_,
                 embedding_ * 3,
                 false,
-                false,
+                block16,
                 linear_half_weight_,
                 vector_tile);
             operators_.linear(
@@ -101,7 +101,7 @@ void DinoEncoder::select_linear_tile(std::uint32_t rows) {
                 embedding_,
                 embedding_,
                 false,
-                false,
+                block16,
                 linear_half_weight_,
                 vector_tile);
             operators_.linear(
@@ -113,7 +113,7 @@ void DinoEncoder::select_linear_tile(std::uint32_t rows) {
                 embedding_,
                 embedding_ * 4,
                 true,
-                false,
+                block16,
                 linear_half_weight_,
                 vector_tile);
             operators_.linear(
@@ -125,7 +125,7 @@ void DinoEncoder::select_linear_tile(std::uint32_t rows) {
                 embedding_ * 4,
                 embedding_,
                 false,
-                false,
+                block16,
                 linear_half_weight_,
                 vector_tile);
         });
@@ -134,25 +134,31 @@ void DinoEncoder::select_linear_tile(std::uint32_t rows) {
     };
     struct Candidate {
         std::uint32_t tile;
+        bool block16;
         std::array<double, 3> samples{};
     };
-    std::array<Candidate, 3> candidates{{
-        {4, {}},
-        {8, {}},
-        {16, {}},
+    std::array<Candidate, 5> candidates{{
+        {0, false, {}},
+        {0, true, {}},
+        {4, false, {}},
+        {8, false, {}},
+        {16, false, {}},
     }};
-    for (Candidate& candidate : candidates) run(candidate.tile);
+    for (Candidate& candidate : candidates)
+        run(candidate.tile, candidate.block16);
     for (std::size_t sample = 0;
          sample < candidates[0].samples.size();
          ++sample) {
         if ((sample & 1u) == 0) {
             for (Candidate& candidate : candidates)
-                candidate.samples[sample] = run(candidate.tile);
+                candidate.samples[sample] =
+                    run(candidate.tile, candidate.block16);
         } else {
             for (auto candidate = candidates.rbegin();
                  candidate != candidates.rend();
                  ++candidate)
-                candidate->samples[sample] = run(candidate->tile);
+                candidate->samples[sample] =
+                    run(candidate->tile, candidate->block16);
         }
     }
     Candidate* best = nullptr;
@@ -166,6 +172,7 @@ void DinoEncoder::select_linear_tile(std::uint32_t rows) {
         }
     }
     linear_vector_tile_ = best->tile;
+    linear_block16_ = best->block16;
     weights_.retain_transformer_precision(linear_half_weight_);
     linear_tile_selected_ = true;
 }
@@ -329,8 +336,12 @@ EncoderOutput DinoEncoder::forward(
             height,
             embedding_);
     });
-    const bool half_attention = weights_.uses_int8_weights()
-        ? false : weights_.select_fp16(false);
+    // Attention probabilities tolerate FP16 storage independently of the
+    // model's weight precision. Packing only pays for the conversion once
+    // the quadratic score matrix is large enough; small FP32/INT8 attention
+    // remains faster without it.
+    const bool half_attention =
+        weights_.select_fp16(false) || tokens >= 512;
     const VkDeviceSize attention_score_bytes = half_attention
         ? std::uint64_t(heads_) * tokens *
             ((std::uint64_t(tokens) + 1) / 2) *
@@ -377,7 +388,8 @@ EncoderOutput DinoEncoder::forward(
                 heads_,
                 &attention_scores,
                 half_attention);
-            if (!linear_half_weight_ && !weights_.uses_int8_weights()) {
+            if (!weights_.uses_int8_weights() &&
+                (!linear_half_weight_ || linear_vector_tile_ != 0)) {
                 operators_.linear_residual(
                     next,
                     attention,
@@ -390,6 +402,7 @@ EncoderOutput DinoEncoder::forward(
                     tokens,
                     embedding_,
                     embedding_,
+                    linear_half_weight_,
                     linear_vector_tile_);
             } else {
                 linear(query, attention,
@@ -418,7 +431,8 @@ EncoderOutput DinoEncoder::forward(
                 block_name(block, ".mlp.fc1.weight"),
                 block_name(block, ".mlp.fc1.bias"),
                 tokens, embedding_, embedding_ * 4, true);
-            if (!linear_half_weight_ && !weights_.uses_int8_weights()) {
+            if (!weights_.uses_int8_weights() &&
+                (!linear_half_weight_ || linear_vector_tile_ != 0)) {
                 operators_.linear_residual(
                     next,
                     hidden,
@@ -429,6 +443,7 @@ EncoderOutput DinoEncoder::forward(
                     tokens,
                     embedding_ * 4,
                     embedding_,
+                    linear_half_weight_,
                     linear_vector_tile_);
             } else {
                 linear(query, hidden,

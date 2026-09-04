@@ -1,6 +1,6 @@
 #version 450 core
 
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) writeonly buffer Output {
     float data[];
@@ -26,17 +26,17 @@ layout(push_constant) uniform Parameters {
 
 #define INNER_TILE 16
 #define INNER_STRIDE 17
-shared float input_tile[64 * INNER_STRIDE];
-shared float weight_tile[32 * INNER_STRIDE];
+shared float input_tile[56 * INNER_STRIDE];
+shared float weight_tile[64 * INNER_STRIDE];
 
 void main() {
     const uint column_base =
-        gl_WorkGroupID.x * 32 + gl_LocalInvocationID.x * 4;
+        gl_WorkGroupID.x * 64 + gl_LocalInvocationID.x * 4;
     const uint row_base =
-        gl_WorkGroupID.y * 64 + gl_LocalInvocationID.y * 8;
+        gl_WorkGroupID.y * 56 + gl_LocalInvocationID.y * 7;
     const uint batch = gl_GlobalInvocationID.z;
-    float sums[8][4];
-    for (uint row = 0; row < 8; ++row) {
+    float sums[7][4];
+    for (uint row = 0; row < 7; ++row) {
         for (uint column = 0; column < 4; ++column) {
             sums[row][column] = 0.0;
         }
@@ -48,13 +48,13 @@ void main() {
          inner_base < parameters.inner;
          inner_base += 16) {
         for (uint index = lane;
-             index < 64 * INNER_TILE;
-             index += 64) {
+             index < 56 * INNER_TILE;
+             index += 128) {
             const uint tile_row = index / INNER_TILE;
             const uint tile_inner = index % INNER_TILE;
             const uint inner = inner_base + tile_inner;
             const uint output_row =
-                gl_WorkGroupID.y * 64 + tile_row;
+                gl_WorkGroupID.y * 56 + tile_row;
             if (batch < parameters.batches &&
                 output_row < parameters.rows &&
                 inner < parameters.inner) {
@@ -77,13 +77,13 @@ void main() {
             }
         }
         for (uint index = lane;
-             index < 32 * INNER_TILE;
-             index += 64) {
+             index < 64 * INNER_TILE;
+             index += 128) {
             const uint tile_column = index / INNER_TILE;
             const uint tile_inner = index % INNER_TILE;
             const uint inner = inner_base + tile_inner;
             const uint output_column =
-                gl_WorkGroupID.x * 32 + tile_column;
+                gl_WorkGroupID.x * 64 + tile_column;
             if (batch < parameters.batches &&
                 output_column < parameters.columns &&
                 inner < parameters.inner) {
@@ -122,11 +122,11 @@ void main() {
         const uint inner_count =
             min(16, parameters.inner - inner_base);
         for (uint inner = 0; inner < inner_count; ++inner) {
-            float input_values[8];
+            float input_values[7];
             float weight_values[4];
-            for (uint row = 0; row < 8; ++row) {
+            for (uint row = 0; row < 7; ++row) {
                 input_values[row] = input_tile[
-                    (gl_LocalInvocationID.y * 8 + row) *
+                    (gl_LocalInvocationID.y * 7 + row) *
                     INNER_STRIDE + inner];
             }
             for (uint column = 0; column < 4; ++column) {
@@ -134,7 +134,7 @@ void main() {
                     (gl_LocalInvocationID.x * 4 + column) *
                     INNER_STRIDE + inner];
             }
-            for (uint row = 0; row < 8; ++row) {
+            for (uint row = 0; row < 7; ++row) {
                 for (uint column = 0; column < 4; ++column) {
                     sums[row][column] +=
                         input_values[row] * weight_values[column];
@@ -143,7 +143,7 @@ void main() {
         }
         barrier();
     }
-    for (uint row = 0; row < 8; ++row) {
+    for (uint row = 0; row < 7; ++row) {
         const uint output_row = row_base + row;
         if (output_row >= parameters.rows) continue;
         for (uint column = 0; column < 4; ++column) {

@@ -40,6 +40,7 @@ public:
         std::uint32_t rows,
         std::uint32_t input_columns,
         std::uint32_t output_columns,
+        bool half_weight = false,
         std::uint32_t vector_tile = 8);
 
     void layer_norm(
@@ -173,6 +174,9 @@ private:
     VulkanPipeline linear_vec4_;
     VulkanPipeline linear_vec8_;
     VulkanPipeline linear_vec16_;
+    VulkanPipeline linear_vec4_half_;
+    VulkanPipeline linear_vec8_half_;
+    VulkanPipeline linear_vec16_half_;
     VulkanPipeline quantize_rows_int8_;
     VulkanPipeline linear_int8_tiled_;
     VulkanPipeline gelu_;

@@ -30,6 +30,9 @@
 #include "linear_vec4_spv.h"
 #include "linear_vec8_spv.h"
 #include "linear_vec16_spv.h"
+#include "linear_vec4_half_spv.h"
+#include "linear_vec8_half_spv.h"
+#include "linear_vec16_half_spv.h"
 #include "linear_int8_tiled_spv.h"
 #include "quantize_rows_int8_spv.h"
 #include "inferbridge/native_harness_precision.h"
@@ -105,6 +108,21 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
       linear_vec16_(context.create_pipeline(
           dad_linear_vec16_spv,
           dad_linear_vec16_spv_size,
+          6,
+          20)),
+      linear_vec4_half_(context.create_pipeline(
+          dad_linear_vec4_half_spv,
+          dad_linear_vec4_half_spv_size,
+          6,
+          20)),
+      linear_vec8_half_(context.create_pipeline(
+          dad_linear_vec8_half_spv,
+          dad_linear_vec8_half_spv_size,
+          6,
+          20)),
+      linear_vec16_half_(context.create_pipeline(
+          dad_linear_vec16_half_spv,
+          dad_linear_vec16_half_spv_size,
           6,
           20)),
       quantize_rows_int8_(
@@ -274,6 +292,9 @@ VulkanOperators::VulkanOperators(VulkanContext& context)
     linear_vec4_.set_debug_name("linear_vec4");
     linear_vec8_.set_debug_name("linear_vec8");
     linear_vec16_.set_debug_name("linear_vec16");
+    linear_vec4_half_.set_debug_name("linear_vec4_half");
+    linear_vec8_half_.set_debug_name("linear_vec8_half");
+    linear_vec16_half_.set_debug_name("linear_vec16_half");
     if (context.supports_packed_int8_dot() &&
         inferbridge::native::requested_precision() ==
             inferbridge::native::Precision::int8) {
@@ -387,41 +408,47 @@ void VulkanOperators::linear(
         std::uint32_t residual;
     } parameters{
         rows, input_columns, output_columns,
-        gelu && !half_weight ? 1u : 0u, 0u};
-    const std::vector<const VulkanBuffer*> descriptors =
-        half_weight
-        ? std::vector<const VulkanBuffer*>{
-            &output, &input, &weight, &bias}
-        : std::vector<const VulkanBuffer*>{
-            &output, &input, &weight, &bias, &output, &bias};
+        gelu ? 1u : 0u, 0u};
+    if (half_weight && vector_tile == 0) {
+        context_.dispatch(
+            block16 ? linear16_half_ : linear_half_,
+            {&output, &input, &weight, &bias},
+            &parameters,
+            12u,
+            divide_up(divide_up(output_columns, 4), 8),
+            divide_up(divide_up(rows, 4), 8));
+        if (gelu) {
+            struct GeluParameters {
+                std::uint32_t count;
+            } gelu_parameters{rows * output_columns};
+            context_.dispatch(
+                gelu_,
+                {&output, &output},
+                &gelu_parameters,
+                sizeof(gelu_parameters),
+                divide_up(gelu_parameters.count, 256));
+        }
+        return;
+    }
+    const std::vector<const VulkanBuffer*> descriptors{
+        &output, &input, &weight, &bias, &output, &bias};
     context_.dispatch(
-        !half_weight
+        half_weight
             ? (vector_tile == 16
+                ? linear_vec16_half_
+                : (vector_tile == 4
+                    ? linear_vec4_half_
+                    : linear_vec8_half_))
+            : (vector_tile == 16
                 ? linear_vec16_
-                : (vector_tile == 4 ? linear_vec4_ : linear_vec8_))
-            : (block16 ? linear16_half_ : linear_half_),
+                : (vector_tile == 4 ? linear_vec4_ : linear_vec8_)),
         descriptors,
         &parameters,
-        half_weight ? 12u : sizeof(parameters),
-        half_weight
-            ? divide_up(divide_up(output_columns, 4), 8)
-            : divide_up(output_columns, 64),
-        half_weight
-            ? divide_up(divide_up(rows, 4), 8)
-            : (vector_tile == 16
-                ? divide_up(rows, 64)
-                : divide_up(rows, 40)));
-    if (gelu && half_weight) {
-        struct GeluParameters {
-            std::uint32_t count;
-        } gelu_parameters{rows * output_columns};
-        context_.dispatch(
-            gelu_,
-            {&output, &output},
-            &gelu_parameters,
-            sizeof(gelu_parameters),
-            divide_up(gelu_parameters.count, 256));
-    }
+        sizeof(parameters),
+        divide_up(output_columns, 64),
+        vector_tile == 16
+            ? divide_up(rows, 64)
+            : divide_up(rows, 40));
 }
 
 void VulkanOperators::linear_residual(
@@ -434,16 +461,20 @@ void VulkanOperators::linear_residual(
     std::uint32_t rows,
     std::uint32_t input_columns,
     std::uint32_t output_columns,
+    bool half_weight,
     std::uint32_t vector_tile) {
     if (rows == 0 || input_columns == 0 || output_columns == 0) {
         throw std::invalid_argument(
             "linear-residual dimensions cannot be zero");
     }
     require_bytes(input, std::uint64_t(rows) * input_columns, "input");
-    require_bytes(
-        weight,
-        std::uint64_t(output_columns) * input_columns,
-        "weight");
+    const std::uint64_t weight_elements =
+        std::uint64_t(output_columns) * input_columns;
+    if (half_weight) {
+        require_half_elements(weight, weight_elements, "weight");
+    } else {
+        require_bytes(weight, weight_elements, "weight");
+    }
     require_bytes(bias, output_columns, "bias");
     require_bytes(
         residual,
@@ -463,9 +494,15 @@ void VulkanOperators::linear_residual(
     } parameters{
         rows, input_columns, output_columns, 0u, 1u};
     context_.dispatch(
-        vector_tile == 16
-            ? linear_vec16_
-            : (vector_tile == 4 ? linear_vec4_ : linear_vec8_),
+        half_weight
+            ? (vector_tile == 16
+                ? linear_vec16_half_
+                : (vector_tile == 4
+                    ? linear_vec4_half_
+                    : linear_vec8_half_))
+            : (vector_tile == 16
+                ? linear_vec16_
+                : (vector_tile == 4 ? linear_vec4_ : linear_vec8_)),
         {
             &output, &input, &weight, &bias, &residual, &scale,
         },
@@ -614,8 +651,8 @@ void VulkanOperators::attention_head64(
         {&scores, &qkv, &qkv},
         &score_parameters,
         sizeof(score_parameters),
-        divide_up(divide_up(tokens, 4), 8),
-        divide_up(divide_up(tokens, 8), 8),
+        divide_up(divide_up(tokens, 4), 16),
+        divide_up(divide_up(tokens, 7), 8),
         heads);
     struct SoftmaxParameters {
         std::uint32_t rows;
@@ -634,8 +671,8 @@ void VulkanOperators::attention_head64(
         {&output, &scores, &qkv},
         &value_parameters,
         sizeof(value_parameters),
-        divide_up(divide_up(64, 4), 8),
-        divide_up(divide_up(tokens, 8), 8),
+        divide_up(divide_up(64, 4), 16),
+        divide_up(divide_up(tokens, 7), 8),
         heads);
 }
 

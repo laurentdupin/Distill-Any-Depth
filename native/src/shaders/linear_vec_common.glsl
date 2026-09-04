@@ -13,9 +13,22 @@ layout(set = 0, binding = 0, std430) writeonly restrict buffer Output {
 layout(set = 0, binding = 1, std430) readonly restrict buffer Input {
     vec4 data[];
 } input_buffer;
+#if defined(HALF_WEIGHT)
+layout(set = 0, binding = 2, std430) readonly restrict buffer Weight {
+    uvec2 data[];
+} weight_buffer;
+vec4 read_weight_vector(uint index) {
+    const uvec2 packed = weight_buffer.data[index];
+    return vec4(unpackHalf2x16(packed.x), unpackHalf2x16(packed.y));
+}
+#else
 layout(set = 0, binding = 2, std430) readonly restrict buffer Weight {
     vec4 data[];
 } weight_buffer;
+vec4 read_weight_vector(uint index) {
+    return weight_buffer.data[index];
+}
+#endif
 layout(set = 0, binding = 3, std430) readonly restrict buffer Bias {
     float data[];
 } bias_buffer;
@@ -80,8 +93,8 @@ void main() {
                         index % K_VECTORS] =
                 output_column < parameters.output_columns &&
                     inner < input_vectors
-                ? weight_buffer.data[
-                      output_column * input_vectors + inner]
+                ? read_weight_vector(
+                      output_column * input_vectors + inner)
                 : vec4(0.0);
         }
         barrier();
