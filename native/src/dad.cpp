@@ -768,3 +768,5 @@ dad_status DAD_CALL dad_inferbridge_bgra8_f32(
 }
 
 }  // extern "C"
+
+#include "linux_capture.inl"

@@ -1,4 +1,7 @@
 #pragma once
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <inferbridge/linux_capture_vulkan.h>
+#endif
 
 #include "distill_any_depth.h"
 
@@ -81,7 +84,11 @@ public:
     virtual GpuOutput output() const = 0;
 };
 
-class Executor {
+class Executor
+#if defined(__linux__) && !defined(__ANDROID__)
+    : public inferbridge::linux_capture::Consumer
+#endif
+{
 public:
     virtual ~Executor() = default;
     virtual void prepare(int image_width, int image_height, int input_size) {

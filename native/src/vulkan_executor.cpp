@@ -1,3 +1,6 @@
+#if defined(__linux__) && !defined(__ANDROID__)
+#include <inferbridge/linux_capture_transformer.h>
+#endif
 #include "executor.h"
 #include "encoder.h"
 #include "dpt.h"
@@ -585,6 +588,17 @@ public:
                 output_height * sizeof(float));
     }
 
+#if defined(__linux__) && !defined(__ANDROID__)
+    ibr_linux_capture_capabilities linux_capture_capabilities() const override {
+        return context_.linux_capture_capabilities();
+    }
+    void infer_linux_capture(const inferbridge::linux_capture::LinuxDmaBufImage& source,
+        uint32_t width,uint32_t height,float* output) override {
+        inferbridge::linux_capture::infer_transformer(context_,source,width,height,output,
+            [&](const auto& image) { return dpt_.forward(encoder_.forward(image,width,height)); },
+            [&] { encoder_.prepare(width,height); });
+    }
+#endif
     GpuCapabilities gpu_capabilities() const override {
 #if defined(_WIN32)
         return d3d12_capabilities(
