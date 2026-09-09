@@ -71,12 +71,7 @@ struct ibrh_job {
     uint32_t height = 0u;
     uint32_t state = IBRH_JOB_COMPLETE;
     std::vector<float> depth;
-    ~ibrh_job() {
-        if (gpu_job != nullptr) dad_gpu_job_release(gpu_job);
-#if defined(DAD_INFERBRIDGE_NATIVE_GPU_TEXTURES)
-        gpu_admission.reset();
-#endif
-    }
+    ~ibrh_job();
 };
 
 namespace {
@@ -256,6 +251,14 @@ public:
         condition_.notify_one();
     }
 
+    void retire(dad_gpu_job* job) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!exited_) { retired_.push_back(job); job = nullptr; }
+        }
+        condition_.notify_one();
+        if (job) dad_gpu_job_release(job);
+    }
     bool cancel_queued(ibrh_job* job) noexcept {
         bool removed = false;
         {
@@ -288,19 +291,19 @@ private:
         for (;;) {
             ibrh_job* job = nullptr;
             bool stop_requested = false;
+            std::deque<dad_gpu_job*> retired;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 condition_.wait(lock, [&] {
-                    return stopping_ || !queue_.empty();
+                    return stopping_ || !queue_.empty() || !retired_.empty();
                 });
-                if (queue_.empty()) {
-                    if (stopping_) return;
-                    continue;
-                }
-                job = queue_.front();
-                queue_.pop_front();
+                if (queue_.empty() && retired_.empty() && stopping_) { exited_ = true; return; }
+                retired.swap(retired_);
+                if (!queue_.empty()) { job = queue_.front(); queue_.pop_front(); }
                 stop_requested = stopping_;
             }
+            for (auto* old : retired) dad_gpu_job_release(old);
+            if (!job) continue;
             if (stop_requested || job->cancel_requested.load()) {
                 job->gpu_state.store(IBRH_JOB_CANCELLED);
                 release_job(job);
@@ -359,12 +362,29 @@ private:
     std::mutex mutex_;
     std::condition_variable condition_;
     std::deque<ibrh_job*> queue_;
+    std::deque<dad_gpu_job*> retired_;
+    bool exited_ = false;
     bool stopping_ = false;
     std::thread thread_;
 };
 #else
 struct DadGpuAdmission {};
 #endif
+
+ibrh_job::~ibrh_job() {
+#if defined(DAD_INFERBRIDGE_NATIVE_GPU_TEXTURES)
+        if (gpu_job) {
+            if (auto worker = gpu_worker.lock()) worker->retire(gpu_job);
+            else dad_gpu_job_release(gpu_job);
+            gpu_job = nullptr;
+        }
+#else
+        if (gpu_job) dad_gpu_job_release(gpu_job);
+#endif
+#if defined(DAD_INFERBRIDGE_NATIVE_GPU_TEXTURES)
+        gpu_admission.reset();
+#endif
+    }
 
 namespace {
 
