@@ -916,8 +916,8 @@ public:
                 std::numeric_limits<int>::max()) ||
             request.shared_texture_handle == 0u ||
             request.output_texture_handle == 0u ||
-            request.output_width != request.width ||
-            request.output_height != request.height ||
+            !request.output_width ||
+            !request.output_height ||
             request.signal_fence_handle == 0u ||
             request.signal_fence_value == 0u ||
             (request.pixel_format != DAD_GPU_PIXEL_BGRA8 &&
@@ -1047,13 +1047,13 @@ public:
             } presentation_parameters{
                 static_cast<std::uint32_t>(network.width),
                 static_cast<std::uint32_t>(network.height),
-                request.width, request.height};
+                request.output_width, request.output_height};
             [copy_encoder setBytes:&presentation_parameters
                             length:sizeof(presentation_parameters)
                            atIndex:1u];
             dispatch_2d(
                 copy_encoder, copy_pipeline_,
-                request.width, request.height);
+                request.output_width, request.output_height);
             [copy_encoder endEncoding];
             [completion encodeSignalEvent:signal_event
                                     value:request.signal_fence_value];

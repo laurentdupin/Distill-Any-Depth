@@ -773,9 +773,11 @@ public:
                 "invalid D3D12 GPU texture inference request");
         }
         const bool external_output = request.output_texture_handle != 0;
+        const auto output_width = external_output ? request.output_width : request.width;
+        const auto output_height = external_output ? request.output_height : request.height;
         if (external_output) {
-            if (request.output_width != request.width ||
-                request.output_height != request.height ||
+            if (!request.output_width ||
+                !request.output_height ||
                 !request.signal_fence_handle || !request.signal_fence_value)
                 throw std::invalid_argument("invalid InferBridge-owned D3D12 output binding");
         }
@@ -875,7 +877,7 @@ public:
                         static_cast<std::uint32_t>(shape.height));
                     FeatureMap depth =
                         dpt_.forward(std::move(encoded));
-                    const std::uint32_t count = request.width * request.height;
+                    const std::uint32_t count = output_width * output_height;
                     VulkanBuffer resized = context_.create_device_buffer(
                         static_cast<std::uint64_t>(count) * sizeof(float));
                     operators_.bilinear_align_false(
@@ -883,8 +885,8 @@ public:
                         depth.buffer,
                         static_cast<std::uint32_t>(shape.width),
                         static_cast<std::uint32_t>(shape.height),
-                        request.width,
-                        request.height,
+                        output_width,
+                        output_height,
                         1);
                     VulkanBuffer range =
                         context_.create_device_buffer(2u * sizeof(float));
@@ -893,10 +895,10 @@ public:
                     operators_.bilinear_align_false_image(
                         output,
                         resized,
-                        request.width,
-                        request.height,
-                        request.width,
-                        request.height);
+                        output_width,
+                        output_height,
+                        output_width,
+                        output_height);
                     context_.release_external_image(
                         input,
                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -915,8 +917,8 @@ public:
                 std::move(cached_input),
                 std::move(cached_output),
                 std::move(submission),
-                request.width,
-                request.height,
+                output_width,
+                output_height,
                 signal_value,
                 request.source_frame_id,
                 request.timestamp_ns);
