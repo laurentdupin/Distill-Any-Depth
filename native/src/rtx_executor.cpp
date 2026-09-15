@@ -46,7 +46,7 @@ struct RtxState {
         auto engine=std::filesystem::u8path(path);
         auto cache=engine.parent_path()/std::filesystem::u8path("gpu-"+id.str())/engine.filename();
         cache.replace_extension(".cache");
-        pipeline=std::make_unique<inferbridge::rtx::GpuPipeline>(device.Get(),engine,cache);
+        pipeline=std::make_unique<inferbridge::rtx::GpuPipeline>(device.Get(),engine,cache,engine.filename().u8string().rfind("metric_",0)==0);
     }
     ~RtxState(){cudaSetDevice(device_index);pipeline.reset();host_import.reset();if(host_texture_handle)CloseHandle(host_texture_handle);if(host_fence_handle)CloseHandle(host_fence_handle);}
 };

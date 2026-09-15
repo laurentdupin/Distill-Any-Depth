@@ -17,6 +17,7 @@
 #include <mutex>
 #include <new>
 #include <stdexcept>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -534,7 +535,13 @@ ibrh_result IBRH_CALL model_load(
         delete model;
         return fail(runtime, IBRH_ERROR_INVALID_ARGUMENT, "RTX requires prepared FP16 engines and a cache directory");
     }
-    const char* enc = encoder(path, parameters) == DAD_ENCODER_VITB ? "vitb" : "vits";
+    std::string enc = "vits";
+    (void)json_string(parameters, "Encoder", enc);
+    const std::set<std::string> rtx_encoders{"vits", "vitb", "vitl", "metric_hypersim_vits", "metric_hypersim_vitb", "metric_hypersim_vitl", "metric_vkitti_vits", "metric_vkitti_vitb", "metric_vkitti_vitl"};
+    if (rtx_encoders.count(enc) == 0u) {
+        delete model;
+        return fail(runtime, IBRH_ERROR_INVALID_ARGUMENT, "RTX encoder is unsupported");
+    }
     path = (std::filesystem::u8path(runtime->cache_path) / enc /
         (std::string(enc) + "-" + std::to_string(model->input_size) + "-fp16.engine")).u8string();
 #endif

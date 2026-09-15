@@ -8,10 +8,10 @@ import shutil
 
 SIZES = (140, 182, 280, 420, 560, 700, 840, 980)
 
-def main():
+def main(family='distill-any-depth'):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint', type=Path, required=True)
-    parser.add_argument('--encoder', choices=('vits', 'vitb'), required=True)
+    parser.add_argument('--encoder', choices=('vits', 'vitb', 'vitl', 'metric_hypersim_vits', 'metric_hypersim_vitb', 'metric_hypersim_vitl', 'metric_vkitti_vits', 'metric_vkitti_vitb', 'metric_vkitti_vitl'), required=True)
     parser.add_argument('--precision', choices=('fp16', 'fp32'), required=True)
     parser.add_argument('--engine-builder', type=Path, required=True)
     parser.add_argument('--cache-builder', type=Path, required=True)
@@ -34,7 +34,7 @@ def main():
     # Copy into fresh staging, never modify the currently usable installation.
     if args.reuse_from and (args.reuse_from / 'shapes.json').is_file():
         previous = json.loads((args.reuse_from / 'shapes.json').read_text(encoding='utf-8'))
-        if previous.get('devices') == devices and previous.get('encoder') == args.encoder and previous.get('precision') == args.precision:
+        if previous.get('family', 'distill-any-depth') == family and previous.get('devices') == devices and previous.get('encoder') == args.encoder and previous.get('precision') == args.precision:
             for size in sorted(set(args.sizes)):
                 name = f'{args.encoder}-{size}-{args.precision}'
                 engine = args.reuse_from / (name + '.engine')
@@ -56,7 +56,7 @@ def main():
         cache = args.output / (name + '.cache')
         if not (args.resume and engine.is_file()):
             subprocess.run([sys.executable, '-X', 'utf8', str(exporter), '--checkpoint', str(args.checkpoint),
-                            '--encoder', args.encoder, '--width', str(size), '--height', str(size),
+                            '--family', family, '--encoder', args.encoder, '--width', str(size), '--height', str(size),
                             '--precision', args.precision, '--output', str(onnx)], check=True)
             subprocess.run([str(args.engine_builder), str(onnx), str(engine)], check=True)
         for device in devices:
@@ -74,7 +74,7 @@ def main():
         onnx.unlink(missing_ok=True)
     # Publish this marker only once every shape has finished conversion and GPU warmup.
     manifest = {'schema': 1, 'encoder': args.encoder, 'precision': args.precision,
-                'depth_convention': 'normalized_inverse_depth', 'devices': devices, 'shapes': entries}
+                'depth_convention': 'normalized_forward_metric' if args.encoder.startswith('metric_') else 'normalized_inverse_depth', 'family': family, 'devices': devices, 'shapes': entries}
     (args.output / 'shapes.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
 
 if __name__ == '__main__':
