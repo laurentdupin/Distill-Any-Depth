@@ -52,6 +52,7 @@ struct ibrh_model {
 };
 
 struct ibrh_job {
+    ibrh_runtime* runtime = nullptr;
     uint32_t output_width = 0u, output_height = 0u;
     std::atomic<uint32_t> references{1u};
     mutable std::mutex gpu_mutex;
@@ -815,6 +816,7 @@ ibrh_result IBRH_CALL submit(
             job->host_stride = input.row_stride_bytes;
         }
         job->input_size = static_cast<int32_t>(size);
+        job->runtime = model->runtime;
         job->source_frame_id = request->source_frame_id;
         job->timestamp_ns = request->timestamp_ns;
         job->width = input.width;
@@ -864,6 +866,7 @@ ibrh_result IBRH_CALL submit(
         return fail(model->runtime, IBRH_ERROR_INVALID_ARGUMENT, "DAD host output binding is invalid");
     auto* job = new (std::nothrow) ibrh_job();
     if (job == nullptr) return IBRH_ERROR_INTERNAL;
+    job->runtime = model->runtime;
     job->source_frame_id = request->source_frame_id;
     job->timestamp_ns = request->timestamp_ns;
     job->width = static_cast<uint32_t>(shape.width);
@@ -925,6 +928,11 @@ ibrh_result IBRH_CALL job_poll(
 #if defined(DAD_INFERBRIDGE_NATIVE_GPU_TEXTURES)
     if (job->gpu_admission && gpu_job == nullptr) {
         status->state = job->gpu_state.load();
+        if (status->state == IBRH_JOB_FAILED) {
+            std::lock_guard<std::mutex> lock(job->gpu_mutex);
+            return fail(job->runtime, IBRH_ERROR_INTERNAL,
+                "DAD GPU worker submission failed: " + job->gpu_error);
+        }
     } else
 #endif
     if (gpu_job != nullptr) {
@@ -932,7 +940,9 @@ ibrh_result IBRH_CALL job_poll(
             sizeof(native_status), DAD_GPU_JOB_QUEUED, 0u, 0u, 0u};
         const dad_status result =
             dad_gpu_job_poll(gpu_job, &native_status);
-        if (result != DAD_STATUS_OK) return status_result(result);
+        if (result != DAD_STATUS_OK)
+            return fail(job->runtime, status_result(result),
+                "DAD GPU polling failed: " + std::string(dad_last_error()));
         switch (native_status.state) {
             case DAD_GPU_JOB_QUEUED: status->state = IBRH_JOB_QUEUED; break;
             case DAD_GPU_JOB_RUNNING: status->state = IBRH_JOB_RUNNING; break;
