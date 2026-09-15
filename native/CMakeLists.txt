@@ -13,6 +13,7 @@ if(MSVC)
     )
 endif()
 
+option(DAD_WITH_RTX "Build the Windows TensorRT for RTX executor" OFF)
 option(DAD_BUILD_TESTS "Build the C ABI and preprocessing tests" ON)
 option(DAD_WITH_VULKAN "Build the dependency-free Vulkan executor" ON)
 option(DAD_WITH_METAL "Build the Apple Metal/MPSGraph executor" ${APPLE})
@@ -127,6 +128,7 @@ target_include_directories(distill_any_depth
 )
 target_compile_definitions(distill_any_depth
     PRIVATE
+        $<$<BOOL:${DAD_WITH_RTX}>:DAD_WITH_RTX=1>
         DAD_BUILD_DLL
         INFERBRIDGE_HARNESS_BUILDING_LIBRARY
         $<$<BOOL:${DAD_WITH_VULKAN}>:DAD_WITH_VULKAN=1>
@@ -169,6 +171,16 @@ if(DAD_WITH_METAL)
     target_link_libraries(distill_any_depth PRIVATE
         "-framework Foundation" "-framework Metal"
         "-framework MetalPerformanceShadersGraph")
+endif()
+
+if(DAD_WITH_RTX)
+    if(NOT WIN32 OR DAD_WITH_VULKAN OR DAD_WITH_METAL)
+        message(FATAL_ERROR "RTX requires a Windows-only runtime with Vulkan and Metal disabled")
+    endif()
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../../native_support/tensorrt_rtx" "rtx-support")
+    target_sources(distill_any_depth PRIVATE src/rtx_executor.cpp)
+    target_link_libraries(distill_any_depth PRIVATE inferbridge_tensorrt_rtx)
+    set_target_properties(distill_any_depth PROPERTIES OUTPUT_NAME inferbridge_dad_tensorrt_rtx_harness)
 endif()
 
 include(GNUInstallDirs)

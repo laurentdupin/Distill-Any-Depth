@@ -111,6 +111,10 @@ public:
         const GpuSubmitRequest& request) = 0;
     virtual std::unique_ptr<GpuJob> submit_gpu_texture(
         const GpuTextureSubmitRequest& request) = 0;
+    virtual std::unique_ptr<GpuJob> submit_host_texture(
+        const GpuTextureSubmitRequest&, const uint8_t*, ptrdiff_t) {
+        throw std::runtime_error("host-to-GPU texture submission is unsupported");
+    }
     virtual void transfer_counters(
         std::uint64_t& upload_bytes,
         std::uint64_t& download_bytes) const = 0;

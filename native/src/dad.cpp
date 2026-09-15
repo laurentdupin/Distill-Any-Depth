@@ -90,7 +90,7 @@ dad_status protect(Function&& function) {
 
 }  // namespace
 
-#if !defined(DAD_WITH_VULKAN) && !defined(DAD_WITH_METAL)
+#if !defined(DAD_WITH_VULKAN) && !defined(DAD_WITH_METAL) && !defined(DAD_WITH_RTX)
 namespace dad {
 std::unique_ptr<Executor> create_executor(
     const std::string&,
@@ -388,10 +388,10 @@ dad_status DAD_CALL dad_submit_d3d12_texture(
     });
 }
 
-dad_status DAD_CALL dad_submit_d3d12_texture_binding(
+static dad_status submit_texture_binding_impl(
     dad_context* context,
     const dad_d3d12_texture_binding_request* request,
-    dad_gpu_job** job) {
+    dad_gpu_job** job, const uint8_t* host_pixels, ptrdiff_t host_stride) {
     if (!context || !request || !job)
         return fail(DAD_STATUS_INVALID_ARGUMENT, "null D3D12 texture binding argument");
     *job = nullptr;
@@ -422,10 +422,22 @@ dad_status DAD_CALL dad_submit_d3d12_texture_binding(
         auto result = std::make_unique<dad_gpu_job>();
         result->executor = context->executor;
         result->source_frame_id = request->source_frame_id;
-        result->implementation = context->executor->submit_gpu_texture(native);
+        result->implementation = host_pixels ? context->executor->submit_host_texture(native, host_pixels, host_stride) : context->executor->submit_gpu_texture(native);
         *job = result.release();
     });
 }
+
+dad_status DAD_CALL dad_submit_d3d12_texture_binding(
+    dad_context* context, const dad_d3d12_texture_binding_request* request, dad_gpu_job** job) {
+    return submit_texture_binding_impl(context, request, job, nullptr, 0);
+}
+#if defined(DAD_WITH_RTX)
+dad_status DAD_CALL dad_submit_host_texture_binding(
+    dad_context* context, const dad_d3d12_texture_binding_request* request,
+    const uint8_t* pixels, ptrdiff_t stride, dad_gpu_job** job) {
+    return submit_texture_binding_impl(context, request, job, pixels, stride);
+}
+#endif
 
 dad_status DAD_CALL dad_submit_metal_texture_binding(
     dad_context* context,
