@@ -74,6 +74,14 @@ def main():
             sys.path.insert(0, str(source))
             from distillanydepth.depth_anything_v2.dpt import DepthAnythingV2
             state = load_file(str(checkpoint), device='cpu')
+            if args.encoder == 'vitl':
+                # Match the canonical Large checkpoint mapping in export_model.py.
+                state = {
+                    ('pretrained.blocks.' + name[len('backbone.blocks.0.'):]
+                     if name.startswith('backbone.blocks.0.') else
+                     'pretrained.' + name[len('backbone.'):]
+                     if name.startswith('backbone.') else name): value
+                    for name, value in state.items()}
         architecture = args.encoder.rsplit('_', 1)[-1]
         features, channels = configs[architecture]
         options = {'max_depth': 20.0 if 'hypersim' in args.encoder else 80.0} if args.family == 'depth-anything-v2' and args.encoder.startswith('metric_') else {}
