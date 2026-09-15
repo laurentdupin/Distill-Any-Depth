@@ -236,6 +236,14 @@ if(DAD_BUILD_TESTS)
     set_tests_properties(
         dad_harness_full_graph PROPERTIES SKIP_RETURN_CODE 77)
 
+    if(WIN32)
+        add_executable(dad_gpu_worker_cancellation tests/gpu_worker_cancellation.cpp)
+        target_compile_features(dad_gpu_worker_cancellation PRIVATE cxx_std_17)
+        target_compile_definitions(dad_gpu_worker_cancellation PRIVATE INFERBRIDGE_HARNESS_BUILDING_LIBRARY)
+        target_link_libraries(dad_gpu_worker_cancellation PRIVATE distill_any_depth)
+        add_test(NAME dad_gpu_worker_cancellation COMMAND dad_gpu_worker_cancellation)
+    endif()
+
     add_executable(dad_image_tests tests/image_tests.cpp src/image.cpp)
     target_include_directories(dad_image_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     add_test(NAME dad_image_tests COMMAND dad_image_tests)

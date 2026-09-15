@@ -301,7 +301,12 @@ private:
                 });
                 if (queue_.empty() && retired_.empty() && stopping_) { exited_ = true; return; }
                 retired.swap(retired_);
-                if (!queue_.empty()) { job = queue_.front(); queue_.pop_front(); }
+                if (!queue_.empty()) {
+                    job = queue_.front(); queue_.pop_front();
+                    // A dequeued request owns its input until submission skips
+                    // it or the native GPU completion event becomes terminal.
+                    job->gpu_state.store(IBRH_JOB_RUNNING);
+                }
                 stop_requested = stopping_;
             }
             for (auto* old : retired) dad_gpu_job_release(old);
@@ -346,10 +351,10 @@ private:
                 {
                     std::lock_guard<std::mutex> lock(job->gpu_mutex);
                     job->gpu_job = native_job;
+                    // Cancellation intent does not mean GPU completion. Keep
+                    // the null-snapshot polling path nonterminal too.
+                    job->gpu_state.store(IBRH_JOB_RUNNING);
                 }
-                job->gpu_state.store(
-                    job->cancel_requested.load() ?
-                        IBRH_JOB_CANCELLED : IBRH_JOB_RUNNING);
             } else {
                 {
                     std::lock_guard<std::mutex> lock(job->gpu_mutex);
@@ -981,14 +986,13 @@ ibrh_result IBRH_CALL job_cancel(ibrh_job* job) {
     }
     if (gpu_job != nullptr) {
         const ibrh_result result = status_result(dad_gpu_job_cancel(gpu_job));
-#if defined(DAD_INFERBRIDGE_NATIVE_GPU_TEXTURES)
-        if (result == IBRH_OK) job->gpu_state.store(IBRH_JOB_CANCELLED);
-#endif
         return result;
     }
 #if defined(DAD_INFERBRIDGE_NATIVE_GPU_TEXTURES)
     if (job->gpu_admission) {
-        job->gpu_state.store(IBRH_JOB_CANCELLED);
+        // cancel_queued() could not remove this request: its worker may be
+        // waiting for the previous inference or importing borrowed handles.
+        // The worker/native job publishes safe completion; retain ownership.
         return IBRH_OK;
     }
 #endif
