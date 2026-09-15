@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import shutil
 
 SIZES = (140, 182, 280, 420, 560, 700, 840, 980)
 
@@ -17,6 +18,7 @@ def main():
     parser.add_argument('--cuda-device', type=int, default=-1)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--reuse-from', type=Path)
     parser.add_argument('--sizes', nargs='+', type=int, choices=SIZES, default=list(SIZES))
     args = parser.parse_args()
     if args.output.exists() and not args.resume:
@@ -28,6 +30,24 @@ def main():
         devices = [device for device in devices if device['index'] == args.cuda_device]
     if not devices:
         raise RuntimeError('No supported RTX adapter is available')
+    # Incremental tier installation may reuse only the same complete adapter/driver set.
+    # Copy into fresh staging, never modify the currently usable installation.
+    if args.reuse_from and (args.reuse_from / 'shapes.json').is_file():
+        previous = json.loads((args.reuse_from / 'shapes.json').read_text(encoding='utf-8'))
+        if previous.get('devices') == devices and previous.get('encoder') == args.encoder and previous.get('precision') == args.precision:
+            for size in sorted(set(args.sizes)):
+                name = f'{args.encoder}-{size}-{args.precision}'
+                engine = args.reuse_from / (name + '.engine')
+                caches = [(args.reuse_from / ('gpu-' + device['luid']) / (name + '.cache'), device) for device in devices]
+                if engine.is_file() and all(cache.is_file() and subprocess.run(
+                        [str(args.cache_builder), 'verify', str(engine), str(cache), str(device['index'])]).returncode == 0
+                        for cache, device in caches):
+                    shutil.copy2(engine, args.output / engine.name)
+                    for cache, device in caches:
+                        target = args.output / ('gpu-' + device['luid'])
+                        target.mkdir(exist_ok=True)
+                        shutil.copy2(cache, target / cache.name)
+            args.resume = True
     entries = []
     for size in sorted(set(args.sizes)):
         name = f'{args.encoder}-{size}-{args.precision}'
