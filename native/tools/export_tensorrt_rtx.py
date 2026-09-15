@@ -99,6 +99,16 @@ def main():
     graph = DepthOnly(model)
     dtype = torch.float16 if args.precision == "fp16" else torch.float32
     graph.to(dtype=dtype)
+    if args.family == 'depth-anything-3':
+        # DA3 explicitly converts backbone features to float for its depth head.
+        # Preserve that precision boundary when exporting the half backbone.
+        model.head.float()
+        def float_features(value):
+            if isinstance(value, torch.Tensor):
+                return value.float()
+            return type(value)(float_features(item) for item in value)
+        model.head.register_forward_pre_hook(
+            lambda module, inputs: (float_features(inputs[0]), *inputs[1:]))
     image = torch.zeros((1, 3, args.height, args.width), dtype=dtype)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix(".partial.onnx")
