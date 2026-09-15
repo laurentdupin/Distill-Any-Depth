@@ -7,6 +7,7 @@ import sys
 import shutil
 
 SIZES = (140, 182, 280, 420, 560, 700, 840, 980)
+PIPELINE_VERSION = 'depth-pipeline-v2'
 
 def main(family='distill-any-depth'):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -24,17 +25,22 @@ def main(family='distill-any-depth'):
     if args.output.exists() and not args.resume:
         parser.error('output must be a fresh installation staging directory')
     args.output.mkdir(parents=True, exist_ok=args.resume)
+    pipeline_marker = args.output / 'pipeline-version.txt'
+    if args.resume and (not pipeline_marker.is_file() or pipeline_marker.read_text(encoding='utf-8') != PIPELINE_VERSION):
+        parser.error('cannot resume an obsolete pipeline; use a fresh output directory')
+    pipeline_marker.write_text(PIPELINE_VERSION, encoding='utf-8')
     exporter = Path(__file__).with_name('export_tensorrt_rtx.py')
     devices = json.loads(subprocess.run([str(args.cache_builder), 'devices'], check=True, capture_output=True, text=True).stdout)
     if args.cuda_device >= 0:
         devices = [device for device in devices if device['index'] == args.cuda_device]
     if not devices:
         raise RuntimeError('No supported RTX adapter is available')
-    # Incremental tier installation may reuse only the same complete adapter/driver set.
+    # Incremental tier installation may reuse only the same complete adapter set;
+    # cache-builder verification checks whether the current driver accepts each cache.
     # Copy into fresh staging, never modify the currently usable installation.
     if args.reuse_from and (args.reuse_from / 'shapes.json').is_file():
         previous = json.loads((args.reuse_from / 'shapes.json').read_text(encoding='utf-8'))
-        if previous.get('family', 'distill-any-depth') == family and previous.get('devices') == devices and previous.get('encoder') == args.encoder and previous.get('precision') == args.precision:
+        if previous.get('pipeline_version') == PIPELINE_VERSION and previous.get('family') == family and previous.get('devices') == devices and previous.get('encoder') == args.encoder and previous.get('precision') == args.precision:
             for size in sorted(set(args.sizes)):
                 name = f'{args.encoder}-{size}-{args.precision}'
                 engine = args.reuse_from / (name + '.engine')
@@ -73,8 +79,11 @@ def main(family='distill-any-depth'):
                         'engine': engine.name, 'cache': cache.name})
         onnx.unlink(missing_ok=True)
     # Publish this marker only once every shape has finished conversion and GPU warmup.
-    manifest = {'schema': 1, 'encoder': args.encoder, 'precision': args.precision,
-                'depth_convention': 'normalized_forward_metric' if args.encoder.startswith('metric_') else 'normalized_inverse_depth', 'family': family, 'devices': devices, 'shapes': entries}
+    manifest = {'schema': 1, 'pipeline_version': PIPELINE_VERSION,
+                'encoder': args.encoder, 'precision': args.precision,
+                'depth_convention': 'raw_forward_depth' if family == 'depth-anything-3' else
+                    'normalized_forward_metric' if args.encoder.startswith('metric_') else 'normalized_inverse_depth',
+                'family': family, 'devices': devices, 'shapes': entries}
     (args.output / 'shapes.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
 
 if __name__ == '__main__':

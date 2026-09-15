@@ -5,6 +5,8 @@
 #include <sstream>
 #include <iomanip>
 #include <atomic>
+#include <fstream>
+#include <inferbridge/native_harness_json.h>
 namespace dad {
 using inferbridge::rtx::check_cuda;
 GpuCapabilities probe_rtx_gpu_capabilities(int index) {
@@ -44,9 +46,24 @@ struct RtxState {
         std::ostringstream id;auto bytes=reinterpret_cast<const unsigned char*>(&luid);
         for(int i=0;i<8;++i)id<<std::hex<<std::setfill('0')<<std::setw(2)<<static_cast<int>(bytes[i]);
         auto engine=std::filesystem::u8path(path);
+        std::ifstream manifest_file(engine.parent_path()/"shapes.json",std::ios::binary);
+        const std::string manifest((std::istreambuf_iterator<char>(manifest_file)),std::istreambuf_iterator<char>());
+        std::string family,convention_name,pipeline_version;
+        using inferbridge::harness_json::string_member;
+        if(!string_member(manifest,"family",family)||
+           !string_member(manifest,"depth_convention",convention_name)||
+           !string_member(manifest,"pipeline_version",pipeline_version)||pipeline_version!="depth-pipeline-v2")
+            throw std::runtime_error("RTX pipeline metadata is obsolete or missing; run setup again");
+        using inferbridge::rtx::DepthConvention;
+        DepthConvention convention;
+        const bool da3=family=="depth-anything-3";
+        if(da3&&convention_name=="raw_forward_depth")convention=DepthConvention::ForwardRelative;
+        else if(family=="depth-anything-v2"&&convention_name=="normalized_forward_metric")convention=DepthConvention::NormalizedForwardMetric;
+        else if((family=="depth-anything-v2"||family=="distill-any-depth")&&convention_name=="normalized_inverse_depth")convention=DepthConvention::NormalizedInverse;
+        else throw std::runtime_error("RTX depth convention does not match the prepared family; run setup again");
         auto cache=engine.parent_path()/std::filesystem::u8path("gpu-"+id.str())/engine.filename();
         cache.replace_extension(".cache");
-        pipeline=std::make_unique<inferbridge::rtx::GpuPipeline>(device.Get(),engine,cache,engine.filename().u8string().rfind("metric_",0)==0);
+        pipeline=std::make_unique<inferbridge::rtx::GpuPipeline>(device.Get(),engine,cache,convention,da3);
     }
     ~RtxState(){cudaSetDevice(device_index);pipeline.reset();host_import.reset();if(host_texture_handle)CloseHandle(host_texture_handle);if(host_fence_handle)CloseHandle(host_fence_handle);}
 };

@@ -96,7 +96,9 @@ def main():
             if args.family == 'depth-anything-3':
                 depth = self.model(image.unsqueeze(1), export_feat_layers=[], infer_gs=False,
                                    use_ray_pose=False)['depth']
-                depth = depth.float().clamp_min(1.e-6).reciprocal()
+                # Preserve raw forward depth. The GPU publication step matches
+                # the existing DA3 contract: 1 - minmax(depth), not minmax(1/depth).
+                depth = depth.float()
             elif args.family == 'depth-anything-v2':
                 depth = self.model(image)
                 if args.encoder.startswith('metric_'):
@@ -131,11 +133,12 @@ def main():
     with checkpoint.open("rb") as source:
         while chunk := source.read(1024 * 1024):
             digest.update(chunk)
-    metadata = {"schema": 1, "converter": args.family + "-tensorrt-rtx-onnx-v2",
+    metadata = {"schema": 1, "converter": args.family + "-tensorrt-rtx-onnx-v3",
                 "family": args.family,
                 "source_sha256": digest.hexdigest(), "encoder": args.encoder,
                 "precision": args.precision, "input_shape": list(image.shape), "dynamic": False,
-                "depth_convention": "normalized_forward_metric" if args.encoder.startswith("metric_") else "raw_inverse_depth", "opset": 18}
+                "depth_convention": "raw_forward_depth" if args.family == "depth-anything-3" else
+                    "normalized_forward_metric" if args.encoder.startswith("metric_") else "raw_inverse_depth", "opset": 18}
     args.output.with_suffix(".json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
 if __name__ == "__main__":
