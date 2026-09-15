@@ -22,10 +22,9 @@ def main():
     args = parser.parse_args()
     if args.checkpoint.suffix.lower() != ".safetensors":
         parser.error("use the canonical .safetensors checkpoint")
-    if min(args.width, args.height) < 14 or min(args.width, args.height) > 1000:
-        parser.error("the shorter inference dimension must be between 14 and 1000")
-    if args.width % 14 or args.height % 14:
-        parser.error("inference dimensions must be multiples of 14")
+    sizes = (140, 182, 280, 420, 560, 700, 840, 980)
+    if args.width != args.height or args.width not in sizes:
+        parser.error("use a fixed square input at size 140, 182, 280, 420, 560, 700, 840, or 980")
     import torch
     from safetensors.torch import load_file
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -49,7 +48,8 @@ def main():
     temporary = args.output.with_suffix(".partial.onnx")
     with torch.inference_mode():
         torch.onnx.export(graph, image, str(temporary), input_names=["image"],
-                          output_names=["depth"], opset_version=18, dynamo=False)
+                          output_names=["depth"], opset_version=18, dynamo=False,
+                          dynamic_axes=None)
     import onnx
     onnx.checker.check_model(str(temporary))
     temporary.replace(args.output)
@@ -59,7 +59,7 @@ def main():
             digest.update(chunk)
     metadata = {"schema": 1, "converter": "dad-tensorrt-rtx-onnx-v1",
                 "source_sha256": digest.hexdigest(), "encoder": args.encoder,
-                "precision": args.precision, "input_shape": list(image.shape),
+                "precision": args.precision, "input_shape": list(image.shape), "dynamic": False,
                 "depth_convention": "raw_inverse_depth", "opset": 18}
     args.output.with_suffix(".json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
