@@ -1,4 +1,5 @@
 #include "vulkan.h"
+#include "inferbridge/native_harness_vulkan_queue_priority.h"
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <inferbridge/linux_capture_vulkan.h>
 #include <linux_capture_preprocess_spv.h>
@@ -409,24 +410,12 @@ VulkanContext::VulkanContext(
     std::vector<VkQueueFamilyProperties> families(family_count);
     vkGetPhysicalDeviceQueueFamilyProperties(
         physical_device_, &family_count, families.data());
-    auto family = families.end();
 #if defined(_WIN32)
-    // Sharing a graphics-capable queue with Godot can stall rendering during
-    // long inference dispatches. Preserve the existing policy elsewhere.
-    family = std::find_if(
-        families.begin(), families.end(), [](const auto& candidate) {
-            return candidate.queueCount > 0 &&
-                (candidate.queueFlags & VK_QUEUE_COMPUTE_BIT) != 0 &&
-                (candidate.queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0;
-        });
+    constexpr bool prefer_dedicated = true;
+#else
+    constexpr bool prefer_dedicated = false;
 #endif
-    if (family == families.end()) {
-        family = std::find_if(
-            families.begin(), families.end(), [](const auto& candidate) {
-                return candidate.queueCount > 0 &&
-                    (candidate.queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
-            });
-    }
+    auto family = inferbridge::native_harness::select_inference_queue_family(families, prefer_dedicated);
     if (family == families.end()) {
         throw std::runtime_error("Vulkan device has no compute queue");
     }
@@ -472,7 +461,7 @@ VulkanContext::VulkanContext(
         nullptr,
     };
     check(
-        vkCreateDevice(physical_device_, &device_info, nullptr, &device_),
+        inferbridge::native_harness::create_inference_vulkan_device(physical_device_, &device_info, nullptr, &device_),
         "vkCreateDevice");
 #if defined(_WIN32)
     get_memory_win32_handle_properties_ =

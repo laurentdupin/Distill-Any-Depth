@@ -3,11 +3,18 @@
 #include <stdexcept>
 
 namespace dad {
+#if defined(DAD_WITH_RTX)
+std::unique_ptr<Executor> create_rtx_executor(const std::string&, int);
+GpuCapabilities probe_rtx_gpu_capabilities(int);
+#endif
 
 std::unique_ptr<Executor> create_executor(
     const std::string& model_path, dad_encoder encoder,
     int vulkan_device_index, std::uint32_t flags,
     const std::string& cache_path) {
+    #if defined(DAD_WITH_RTX)
+    return create_rtx_executor(model_path, vulkan_device_index);
+    #endif
     const bool force_metal = (flags & DAD_CREATE_FORCE_METAL) != 0u;
     const bool force_vulkan = (flags & DAD_CREATE_FORCE_VULKAN) != 0u;
     if (force_metal && force_vulkan)
@@ -27,7 +34,9 @@ std::unique_ptr<Executor> create_executor(
 }
 
 GpuCapabilities probe_gpu_capabilities(int vulkan_device_index) {
-#if defined(DAD_WITH_VULKAN)
+#if defined(DAD_WITH_RTX)
+    return probe_rtx_gpu_capabilities(vulkan_device_index);
+#elif defined(DAD_WITH_VULKAN)
     return probe_vulkan_gpu_capabilities(vulkan_device_index);
 #else
     (void)vulkan_device_index;

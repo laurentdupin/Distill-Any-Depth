@@ -1,3 +1,4 @@
+#include "inferbridge/native_harness_queue_priority.h"
 #include <inferbridge/native_harness_json.h>
 #include "inferbridge_harness.h"
 
@@ -10,11 +11,13 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <stdexcept>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -24,11 +27,15 @@
 #define DAD_INFERBRIDGE_NATIVE_GPU_TEXTURES 1
 #endif
 
+#if defined(DAD_WITH_RTX)
+extern "C" dad_status DAD_CALL dad_submit_host_texture_binding(dad_context*, const dad_d3d12_texture_binding_request*, const uint8_t*, ptrdiff_t, dad_gpu_job**);
+#endif
 class DadGpuWorker;
 struct DadGpuAdmission;
 
 struct ibrh_runtime {
     std::string error;
+    std::string cache_path;
     int32_t vulkan_device_index = 0;
     uint64_t adapter_luid = 0u;
 };
@@ -46,6 +53,7 @@ struct ibrh_model {
 };
 
 struct ibrh_job {
+    ibrh_runtime* runtime = nullptr;
     uint32_t output_width = 0u, output_height = 0u;
     std::atomic<uint32_t> references{1u};
     mutable std::mutex gpu_mutex;
@@ -56,6 +64,8 @@ struct ibrh_job {
     std::atomic<uint32_t> gpu_state{IBRH_JOB_COMPLETE};
     std::atomic<bool> cancel_requested{false};
     std::string gpu_error;
+    const uint8_t* host_pixels = nullptr;
+    ptrdiff_t host_stride = 0;
     uintptr_t input_texture_handle = 0u;
     uintptr_t input_texture_identity = 0u;
     uintptr_t input_fence_handle = 0u;
@@ -291,7 +301,12 @@ private:
                 });
                 if (queue_.empty() && retired_.empty() && stopping_) { exited_ = true; return; }
                 retired.swap(retired_);
-                if (!queue_.empty()) { job = queue_.front(); queue_.pop_front(); }
+                if (!queue_.empty()) {
+                    job = queue_.front(); queue_.pop_front();
+                    // A dequeued request owns its input until submission skips
+                    // it or the native GPU completion event becomes terminal.
+                    job->gpu_state.store(IBRH_JOB_RUNNING);
+                }
                 stop_requested = stopping_;
             }
             for (auto* old : retired) dad_gpu_job_release(old);
@@ -312,8 +327,12 @@ private:
                 job->output_fence_handle, job->output_fence_value,
                 job->source_frame_id, job->timestamp_ns,
                 job->input_texture_identity, job->output_texture_identity};
-            const dad_status result = dad_submit_d3d12_texture_binding(
-                context_, &request, &native_job);
+#if defined(DAD_WITH_RTX)
+            const dad_status result = job->host_pixels ? dad_submit_host_texture_binding(context_, &request, job->host_pixels, job->host_stride, &native_job) :
+                dad_submit_d3d12_texture_binding(context_, &request, &native_job);
+#else
+            const dad_status result = dad_submit_d3d12_texture_binding(context_, &request, &native_job);
+#endif
 #elif defined(__APPLE__)
             const dad_metal_texture_binding_request request{
                 sizeof(request), DAD_ABI_VERSION,
@@ -332,10 +351,10 @@ private:
                 {
                     std::lock_guard<std::mutex> lock(job->gpu_mutex);
                     job->gpu_job = native_job;
+                    // Cancellation intent does not mean GPU completion. Keep
+                    // the null-snapshot polling path nonterminal too.
+                    job->gpu_state.store(IBRH_JOB_RUNNING);
                 }
-                job->gpu_state.store(
-                    job->cancel_requested.load() ?
-                        IBRH_JOB_CANCELLED : IBRH_JOB_RUNNING);
             } else {
                 {
                     std::lock_guard<std::mutex> lock(job->gpu_mutex);
@@ -388,7 +407,11 @@ ibrh_result IBRH_CALL query_capabilities(
     *capabilities = {};
     capabilities->struct_size = sizeof(*capabilities);
     capabilities->api_version = IBRH_CURRENT_API_VERSION;
+#if defined(DAD_WITH_RTX)
     capabilities->flags = IBRH_CAP_HOST_MEMORY;
+#else
+    capabilities->flags = IBRH_CAP_HOST_MEMORY;
+#endif
     capabilities->input_domain_mask =
         1ull << IBRH_RESOURCE_DOMAIN_HOST;
     capabilities->output_domain_mask =
@@ -408,6 +431,11 @@ ibrh_result IBRH_CALL query_capabilities(
     capabilities->synchronization_mask =
         1ull << IBRH_SYNC_D3D12_FENCE;
     capabilities->maximum_in_flight_jobs = 3u;
+#if defined(DAD_WITH_RTX)
+    capabilities->maximum_in_flight_jobs = 3u;
+    capabilities->input_domain_mask = (1ull << IBRH_RESOURCE_DOMAIN_D3D12) | (1ull << IBRH_RESOURCE_DOMAIN_HOST);
+    capabilities->output_domain_mask = 1ull << IBRH_RESOURCE_DOMAIN_D3D12;
+#endif
 #elif defined(__APPLE__)
     capabilities->flags |=
         IBRH_CAP_ASYNC_SUBMIT | IBRH_CAP_CANCELLATION |
@@ -438,6 +466,7 @@ ibrh_result IBRH_CALL runtime_create(
         return IBRH_ERROR_STRUCT_TOO_SMALL;
     auto* runtime = new (std::nothrow) ibrh_runtime();
     if (runtime == nullptr) return IBRH_ERROR_INTERNAL;
+    runtime->cache_path = copy_string(request->cache_path);
     const std::string device = copy_string(request->requested_device_json);
     uint32_t index = 0u;
     if (json_uint(device, "index", index)) {
@@ -482,8 +511,9 @@ ibrh_result IBRH_CALL model_load(
         return fail(
             runtime, IBRH_ERROR_INVALID_ARGUMENT,
             "DAD model path is missing");
-    const std::string path = copy_string(request->model_path);
+    std::string path = copy_string(request->model_path);
     const std::string parameters = copy_string(request->parameters_json);
+    const inferbridge::native_harness::ScopedQueuePriorityRequest queue_priority_scope(parameters);
     inferbridge::native::Precision precision;
     try {
         precision = inferbridge::native::precision_from_parameters_json(parameters);
@@ -505,6 +535,21 @@ ibrh_result IBRH_CALL model_load(
         create_flags |= DAD_CREATE_FORCE_FP16;
     else if (precision == inferbridge::native::Precision::int8)
         create_flags |= DAD_CREATE_FORCE_INT8;
+#if defined(DAD_WITH_RTX)
+    if (precision != inferbridge::native::Precision::fp16 || runtime->cache_path.empty()) {
+        delete model;
+        return fail(runtime, IBRH_ERROR_INVALID_ARGUMENT, "RTX requires prepared FP16 engines and a cache directory");
+    }
+    std::string enc = "vits";
+    (void)json_string(parameters, "Encoder", enc);
+    const std::set<std::string> rtx_encoders{"vits", "vitb", "vitl", "metric_hypersim_vits", "metric_hypersim_vitb", "metric_hypersim_vitl", "metric_vkitti_vits", "metric_vkitti_vitb", "metric_vkitti_vitl"};
+    if (rtx_encoders.count(enc) == 0u) {
+        delete model;
+        return fail(runtime, IBRH_ERROR_INVALID_ARGUMENT, "RTX encoder is unsupported");
+    }
+    path = (std::filesystem::u8path(runtime->cache_path) / enc /
+        (std::string(enc) + "-" + std::to_string(model->input_size) + "-fp16.engine")).u8string();
+#endif
     const dad_create_options options{
         sizeof(options), DAD_ABI_VERSION, encoder(path, parameters),
         runtime->vulkan_device_index, create_flags};
@@ -594,6 +639,11 @@ bool processing_shape(const ibrh_model* model, const ibrh_resource& input,
     const std::string& parameters, uint32_t& width, uint32_t& height) {
     uint32_t size = model->input_size;
     if (!input_size(parameters, size, size)) return false;
+#if defined(DAD_WITH_RTX)
+    if(size != model->input_size) return false;
+    width = height = size;
+    return true;
+#endif
     dad_image_shape shape{};
     const auto status = input.domain == IBRH_RESOURCE_DOMAIN_HOST ? dad_get_inferbridge_shape(input.width, input.height, size, &shape) :
         dad_get_network_shape(input.width, input.height, size, &shape);
@@ -656,7 +706,15 @@ ibrh_result IBRH_CALL submit(
     const bool metal_texture =
         input.domain == IBRH_RESOURCE_DOMAIN_METAL &&
         input.native_handle_type == IBRH_NATIVE_HANDLE_METAL_TEXTURE;
-    if ((d3d12_texture || metal_texture) &&
+#if defined(DAD_WITH_RTX)
+    const bool rtx_host = input.domain == IBRH_RESOURCE_DOMAIN_HOST &&
+        input.native_handle_type == IBRH_NATIVE_HANDLE_HOST_POINTER && input.width <= UINT32_MAX / 4u &&
+        input.row_stride_bytes >= input.width * 4u && input.byte_offset <= input.byte_size &&
+        input.byte_size - input.byte_offset >= static_cast<uint64_t>(input.row_stride_bytes) * input.height;
+#else
+    const bool rtx_host = false;
+#endif
+    if ((d3d12_texture || metal_texture || rtx_host) &&
         input.kind == IBRH_RESOURCE_KIND_IMAGE_2D) {
         if ((input.pixel_format != IBRH_PIXEL_BGRA8 &&
              input.pixel_format != IBRH_PIXEL_RGBA8) ||
@@ -689,6 +747,11 @@ ibrh_result IBRH_CALL submit(
             signal.operation == IBRH_SYNC_SIGNAL &&
             signal.native_handle_type == IBRH_NATIVE_HANDLE_WIN32_SHARED &&
             signal.native_handle != 0u;
+        const bool valid_rtx_host = rtx_host && wait.kind == IBRH_SYNC_NONE &&
+            output_resource.domain == IBRH_RESOURCE_DOMAIN_D3D12 &&
+            output_resource.native_handle_type == IBRH_NATIVE_HANDLE_WIN32_SHARED &&
+            signal.kind == IBRH_SYNC_D3D12_FENCE && signal.operation == IBRH_SYNC_SIGNAL &&
+            signal.native_handle_type == IBRH_NATIVE_HANDLE_WIN32_SHARED && signal.native_handle != 0u && signal.value != 0u;
         const bool no_metal_wait = wait.kind == IBRH_SYNC_NONE &&
             wait.native_handle == 0u;
         const bool metal_event_wait =
@@ -704,7 +767,7 @@ ibrh_result IBRH_CALL submit(
             signal.operation == IBRH_SYNC_SIGNAL &&
             signal.native_handle_type == IBRH_NATIVE_HANDLE_METAL_SHARED_EVENT &&
             signal.native_handle != 0u && signal.value != 0u;
-        if (!common_output || (!valid_d3d12 && !valid_metal))
+        if (!common_output || (!valid_d3d12 && !valid_metal && !valid_rtx_host))
             return fail(
                 model->runtime, IBRH_ERROR_INVALID_ARGUMENT,
                 "DAD native GPU transfer bindings are invalid");
@@ -712,15 +775,20 @@ ibrh_result IBRH_CALL submit(
         return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
 #else
 #if defined(_WIN32)
-        if (!valid_d3d12) return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
+        if (!valid_d3d12 && !valid_rtx_host) return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
 #elif defined(__APPLE__)
         if (!valid_metal) return IBRH_ERROR_UNSUPPORTED_CAPABILITY;
 #endif
         uint32_t admitted = model->gpu_admissions->load();
-        while (admitted < 3u &&
+#if defined(DAD_WITH_RTX)
+        constexpr uint32_t admission_limit = 3u;
+#else
+        constexpr uint32_t admission_limit = 3u;
+#endif
+        while (admitted < admission_limit &&
                !model->gpu_admissions->compare_exchange_weak(
                    admitted, admitted + 1u)) {}
-        if (admitted >= 3u) {
+        if (admitted >= admission_limit) {
             return fail(
                 model->runtime, IBRH_ERROR_INVALID_STATE,
                 "all DAD GPU job admissions are occupied");
@@ -755,7 +823,12 @@ ibrh_result IBRH_CALL submit(
                 : output_resource.native_handle);
         job->output_fence_handle = static_cast<uintptr_t>(signal.native_handle);
         job->output_fence_value = signal.value;
+        if (rtx_host) {
+            job->host_pixels = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(input.native_handle)) + input.byte_offset;
+            job->host_stride = input.row_stride_bytes;
+        }
         job->input_size = static_cast<int32_t>(size);
+        job->runtime = model->runtime;
         job->source_frame_id = request->source_frame_id;
         job->timestamp_ns = request->timestamp_ns;
         job->width = input.width;
@@ -805,6 +878,7 @@ ibrh_result IBRH_CALL submit(
         return fail(model->runtime, IBRH_ERROR_INVALID_ARGUMENT, "DAD host output binding is invalid");
     auto* job = new (std::nothrow) ibrh_job();
     if (job == nullptr) return IBRH_ERROR_INTERNAL;
+    job->runtime = model->runtime;
     job->source_frame_id = request->source_frame_id;
     job->timestamp_ns = request->timestamp_ns;
     job->width = static_cast<uint32_t>(shape.width);
@@ -866,6 +940,11 @@ ibrh_result IBRH_CALL job_poll(
 #if defined(DAD_INFERBRIDGE_NATIVE_GPU_TEXTURES)
     if (job->gpu_admission && gpu_job == nullptr) {
         status->state = job->gpu_state.load();
+        if (status->state == IBRH_JOB_FAILED) {
+            std::lock_guard<std::mutex> lock(job->gpu_mutex);
+            return fail(job->runtime, IBRH_ERROR_INTERNAL,
+                "DAD GPU worker submission failed: " + job->gpu_error);
+        }
     } else
 #endif
     if (gpu_job != nullptr) {
@@ -873,7 +952,9 @@ ibrh_result IBRH_CALL job_poll(
             sizeof(native_status), DAD_GPU_JOB_QUEUED, 0u, 0u, 0u};
         const dad_status result =
             dad_gpu_job_poll(gpu_job, &native_status);
-        if (result != DAD_STATUS_OK) return status_result(result);
+        if (result != DAD_STATUS_OK)
+            return fail(job->runtime, status_result(result),
+                "DAD GPU polling failed: " + std::string(dad_last_error()));
         switch (native_status.state) {
             case DAD_GPU_JOB_QUEUED: status->state = IBRH_JOB_QUEUED; break;
             case DAD_GPU_JOB_RUNNING: status->state = IBRH_JOB_RUNNING; break;
@@ -905,14 +986,13 @@ ibrh_result IBRH_CALL job_cancel(ibrh_job* job) {
     }
     if (gpu_job != nullptr) {
         const ibrh_result result = status_result(dad_gpu_job_cancel(gpu_job));
-#if defined(DAD_INFERBRIDGE_NATIVE_GPU_TEXTURES)
-        if (result == IBRH_OK) job->gpu_state.store(IBRH_JOB_CANCELLED);
-#endif
         return result;
     }
 #if defined(DAD_INFERBRIDGE_NATIVE_GPU_TEXTURES)
     if (job->gpu_admission) {
-        job->gpu_state.store(IBRH_JOB_CANCELLED);
+        // cancel_queued() could not remove this request: its worker may be
+        // waiting for the previous inference or importing borrowed handles.
+        // The worker/native job publishes safe completion; retain ownership.
         return IBRH_OK;
     }
 #endif
