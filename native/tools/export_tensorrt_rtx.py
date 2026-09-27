@@ -12,6 +12,43 @@ import sys
 import struct
 
 
+def convert_graph_to_fp16(model):
+    """Convert a CPU-traced FP32 graph to the FP16 TensorRT contract.
+
+    onnxconverter-common deliberately leaves a few numerically sensitive
+    operators in FP32 and inserts casts around them. Preserve those new casts,
+    but convert explicit FLOAT casts from the source model: leaving one of
+    those casts in FP32 creates mixed-type elementwise operations that
+    TensorRT rejects.
+    """
+    import onnx
+    from onnxconverter_common import float16
+
+    original_float_cast_outputs = {
+        output for node in model.graph.node
+        if node.op_type == "Cast" and any(
+            attribute.name == "to" and attribute.i == onnx.TensorProto.FLOAT
+            for attribute in node.attribute)
+        for output in node.output
+    }
+    converted = float16.convert_float_to_float16(
+        model,
+        keep_io_types=False,
+        disable_shape_infer=False,
+        # Let NumPy perform normal IEEE FP16 rounding and underflow instead of
+        # clamping every tiny nonzero weight to the converter's default 1e-7.
+        min_positive_val=1e-30,
+        max_finite_val=65504.0,
+    )
+    for node in converted.graph.node:
+        if not original_float_cast_outputs.intersection(node.output):
+            continue
+        for attribute in node.attribute:
+            if attribute.name == "to" and attribute.i == onnx.TensorProto.FLOAT:
+                attribute.i = onnx.TensorProto.FLOAT16
+    return converted
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--family", choices=("distill-any-depth", "depth-anything-v2", "depth-anything-3"), default="distill-any-depth")
@@ -106,20 +143,12 @@ def main():
             else:
                 depth = self.model(image)[0]
             return depth.reshape(1, 1, args.height, args.width)
-    graph = DepthOnly(model)
-    dtype = torch.float16 if args.precision == "fp16" else torch.float32
-    graph.to(dtype=dtype)
-    if args.family == 'depth-anything-3':
-        # DA3 explicitly converts backbone features to float for its depth head.
-        # Preserve that precision boundary when exporting the half backbone.
-        model.head.float()
-        def float_features(value):
-            if isinstance(value, torch.Tensor):
-                return value.float()
-            return type(value)(float_features(item) for item in value)
-        model.head.register_forward_pre_hook(
-            lambda module, inputs: (float_features(inputs[0]), *inputs[1:]))
-    image = torch.zeros((1, 3, args.height, args.width), dtype=dtype)
+    # PyTorch's CPU FP16 kernels can be dramatically slower than FP32 and ONNX
+    # export executes the complete graph. Always trace on the CPU in FP32, then
+    # convert the finished ONNX graph for an FP16 TensorRT engine. This keeps
+    # setup independent of CUDA while preserving FP16 engine I/O and weights.
+    graph = DepthOnly(model).float()
+    image = torch.zeros((1, 3, args.height, args.width), dtype=torch.float32)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     temporary = args.output.with_suffix(".partial.onnx")
     with torch.inference_mode():
@@ -127,13 +156,17 @@ def main():
                           output_names=["depth"], opset_version=18, dynamo=False,
                           dynamic_axes=None)
     import onnx
-    onnx.checker.check_model(str(temporary))
+    exported = onnx.load(str(temporary))
+    if args.precision == "fp16":
+        exported = convert_graph_to_fp16(exported)
+        onnx.save(exported, str(temporary))
+    onnx.checker.check_model(exported)
     temporary.replace(args.output)
     digest = hashlib.sha256()
     with checkpoint.open("rb") as source:
         while chunk := source.read(1024 * 1024):
             digest.update(chunk)
-    metadata = {"schema": 1, "converter": args.family + "-tensorrt-rtx-onnx-v3",
+    metadata = {"schema": 1, "converter": args.family + "-tensorrt-rtx-onnx-v4",
                 "family": args.family,
                 "source_sha256": digest.hexdigest(), "encoder": args.encoder,
                 "precision": args.precision, "input_shape": list(image.shape), "dynamic": False,

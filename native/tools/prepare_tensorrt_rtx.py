@@ -5,9 +5,49 @@ from pathlib import Path
 import subprocess
 import sys
 import shutil
+import concurrent.futures
+import ctypes
+import os
+import time
 
 SIZES = (140, 182, 280, 420, 560, 700, 840, 980)
-PIPELINE_VERSION = 'depth-pipeline-v2'
+PIPELINE_VERSION = 'depth-pipeline-v3'
+
+
+def available_physical_memory():
+    class MemoryStatus(ctypes.Structure):
+        _fields_ = [('length', ctypes.c_ulong), ('load', ctypes.c_ulong),
+                    ('total_physical', ctypes.c_ulonglong),
+                    ('available_physical', ctypes.c_ulonglong),
+                    ('total_page_file', ctypes.c_ulonglong),
+                    ('available_page_file', ctypes.c_ulonglong),
+                    ('total_virtual', ctypes.c_ulonglong),
+                    ('available_virtual', ctypes.c_ulonglong),
+                    ('available_extended_virtual', ctypes.c_ulonglong)]
+    status = MemoryStatus()
+    status.length = ctypes.sizeof(status)
+    return status.available_physical if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)) else 0
+
+
+def checkpoint_size(path):
+    if path.is_file():
+        return path.stat().st_size
+    return sum(item.stat().st_size for item in path.rglob('*') if item.is_file())
+
+
+def build_worker_count(checkpoint, task_count):
+    logical_cpus = os.cpu_count() or 1
+    # Measurements on an 8-core/16-thread Ryzen 7 show four exporters with
+    # four intra-op threads complete four shapes in about 10 seconds, versus
+    # 18 seconds with two exporters and 31 seconds serially.
+    cpu_workers = max(1, logical_cpus // 4)
+    # Export temporarily holds the checkpoint, model, traced graph and ONNX
+    # protobuf. Keep at least 2 GiB of available RAM per concurrent worker and
+    # scale the estimate for larger Base/Large checkpoints.
+    worker_memory = max(2 * 1024 ** 3, checkpoint_size(checkpoint) * 5)
+    available = available_physical_memory()
+    memory_workers = max(1, available // worker_memory) if available else 1
+    return max(1, min(task_count, cpu_workers, memory_workers))
 
 def main(family='distill-any-depth'):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -54,17 +94,44 @@ def main(family='distill-any-depth'):
                         target.mkdir(exist_ok=True)
                         shutil.copy2(cache, target / cache.name)
             args.resume = True
-    entries = []
-    for size in sorted(set(args.sizes)):
+    selected_sizes = sorted(set(args.sizes))
+
+    def build_engine(size):
         name = f'{args.encoder}-{size}-{args.precision}'
         onnx = args.output / (name + '.onnx')
         engine = args.output / (name + '.engine')
+        if args.resume and engine.is_file():
+            return
+        started = time.monotonic()
+        print(f'TensorRT CPU export started size={size} export_precision=fp32 '
+              f'tensorrt_precision={args.precision}', flush=True)
+        environment = os.environ.copy()
+        environment['OMP_NUM_THREADS'] = str(max(1, (os.cpu_count() or 1) // workers))
+        environment['MKL_NUM_THREADS'] = environment['OMP_NUM_THREADS']
+        subprocess.run([sys.executable, '-X', 'utf8', str(exporter), '--checkpoint', str(args.checkpoint),
+                        '--family', family, '--encoder', args.encoder, '--width', str(size), '--height', str(size),
+                        '--precision', args.precision, '--output', str(onnx)], check=True, env=environment)
+        exported = time.monotonic()
+        print(f'TensorRT CPU export completed size={size} export_precision=fp32 '
+              f'duration_ms={int((exported - started) * 1000)}', flush=True)
+        subprocess.run([str(args.engine_builder), str(onnx), str(engine)], check=True)
+        print(f'TensorRT engine completed size={size} duration_ms={int((time.monotonic() - exported) * 1000)}', flush=True)
+        onnx.unlink(missing_ok=True)
+
+    missing_engines = [size for size in selected_sizes if not (
+        args.resume and (args.output / f'{args.encoder}-{size}-{args.precision}.engine').is_file())]
+    workers = build_worker_count(args.checkpoint, len(missing_engines)) if missing_engines else 1
+    print(f'TensorRT engine preparation workers={workers} shapes={len(missing_engines)}', flush=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(build_engine, size) for size in missing_engines]
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
+
+    entries = []
+    for size in selected_sizes:
+        name = f'{args.encoder}-{size}-{args.precision}'
+        engine = args.output / (name + '.engine')
         cache = args.output / (name + '.cache')
-        if not (args.resume and engine.is_file()):
-            subprocess.run([sys.executable, '-X', 'utf8', str(exporter), '--checkpoint', str(args.checkpoint),
-                            '--family', family, '--encoder', args.encoder, '--width', str(size), '--height', str(size),
-                            '--precision', args.precision, '--output', str(onnx)], check=True)
-            subprocess.run([str(args.engine_builder), str(onnx), str(engine)], check=True)
         for device in devices:
             gpu_root = args.output / ('gpu-' + device['luid'])
             gpu_root.mkdir(exist_ok=True)
@@ -74,10 +141,12 @@ def main(family='distill-any-depth'):
                 if verified.returncode == 0:
                     continue
                 gpu_cache.unlink()
+            started = time.monotonic()
+            print(f'TensorRT cache started size={size} cuda_device={device["index"]}', flush=True)
             subprocess.run([str(args.cache_builder), 'setup', str(engine), str(gpu_cache), str(device['index'])], check=True)
+            print(f'TensorRT cache completed size={size} cuda_device={device["index"]} duration_ms={int((time.monotonic() - started) * 1000)}', flush=True)
         entries.append({'size': size, 'input_shape': [1, 3, size, size],
                         'engine': engine.name, 'cache': cache.name})
-        onnx.unlink(missing_ok=True)
     # Publish this marker only once every shape has finished conversion and GPU warmup.
     manifest = {'schema': 1, 'pipeline_version': PIPELINE_VERSION,
                 'encoder': args.encoder, 'precision': args.precision,
