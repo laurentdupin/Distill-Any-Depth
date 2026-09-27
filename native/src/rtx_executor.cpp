@@ -52,7 +52,7 @@ struct RtxState {
         using inferbridge::harness_json::string_member;
         if(!string_member(manifest,"family",family)||
            !string_member(manifest,"depth_convention",convention_name)||
-           !string_member(manifest,"pipeline_version",pipeline_version)||pipeline_version!="depth-pipeline-v2")
+           !string_member(manifest,"pipeline_version",pipeline_version)||pipeline_version!="depth-pipeline-v3")
             throw std::runtime_error("RTX pipeline metadata is obsolete or missing; run setup again");
         using inferbridge::rtx::DepthConvention;
         DepthConvention convention;
