@@ -280,6 +280,7 @@ private:
 
     VkInstance instance_ = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
+    std::uint32_t required_cooperative_subgroup_size_ = 0;
     VkPhysicalDeviceMemoryProperties memory_properties_{};
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue queue_ = VK_NULL_HANDLE;
