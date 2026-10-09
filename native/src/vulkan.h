@@ -33,138 +33,23 @@ class VulkanPipeline;
 class VulkanBuffer;
 class VulkanImage;
 
-struct VulkanDeferredBuffer {
-    VkBuffer buffer = VK_NULL_HANDLE;
-    VkDeviceMemory memory = VK_NULL_HANDLE;
-    void* mapped = nullptr;
-    VkDeviceSize size = 0;
-    bool cacheable = false;
-};
+#include <inferbridge/vulkan/declarations/vulkan_deferred_buffer.h>
 
-struct VulkanBatchedDescriptor {
-    VulkanPipeline* pipeline = nullptr;
-    VkDescriptorSet set = VK_NULL_HANDLE;
-};
+#include <inferbridge/vulkan/declarations/vulkan_batched_descriptor.h>
 
-struct VulkanDispatchResource {
-    const VulkanBuffer* buffer = nullptr;
-    const VulkanImage* image = nullptr;
-};
+#include <inferbridge/vulkan/declarations/vulkan_dispatch_resource.h>
 
-struct VulkanExternalCapabilities {
-    bool d3d12_resource_import = false;
-    bool d3d12_fence_import = false;
-    bool d3d12_bgra8_sampled_image_import = false;
-    bool d3d12_rgba8_sampled_image_import = false;
-    bool d3d12_r32_storage_image_import = false;
-};
+#include <inferbridge/vulkan/declarations/vulkan_external_capabilities_variant_1.h>
 
-class VulkanSemaphore {
-public:
-    VulkanSemaphore() = default;
-    VulkanSemaphore(VulkanSemaphore&& other) noexcept;
-    VulkanSemaphore& operator=(VulkanSemaphore&& other) noexcept;
-    VulkanSemaphore(const VulkanSemaphore&) = delete;
-    VulkanSemaphore& operator=(const VulkanSemaphore&) = delete;
-    ~VulkanSemaphore();
+#include <inferbridge/vulkan/declarations/vulkan_semaphore.h>
 
-private:
-    friend class VulkanContext;
-    VulkanContext* owner_ = nullptr;
-    VkSemaphore semaphore_ = VK_NULL_HANDLE;
-    std::uint64_t value_ = 0;
-};
+#include <inferbridge/vulkan/declarations/vulkan_submission.h>
 
-class VulkanSubmission {
-public:
-    VulkanSubmission() = default;
-    VulkanSubmission(VulkanSubmission&& other) noexcept;
-    VulkanSubmission& operator=(VulkanSubmission&& other) noexcept;
-    VulkanSubmission(const VulkanSubmission&) = delete;
-    VulkanSubmission& operator=(const VulkanSubmission&) = delete;
-    ~VulkanSubmission();
+#include <inferbridge/vulkan/declarations/vulkan_buffer.h>
 
-    bool ready() const;
-    void wait() const;
+#include <inferbridge/vulkan/declarations/vulkan_image.h>
 
-private:
-    friend class VulkanContext;
-    struct Resources;
-    VulkanContext* owner_ = nullptr;
-    VkCommandBuffer command_ = VK_NULL_HANDLE;
-    VkFence fence_ = VK_NULL_HANDLE;
-    Resources* resources_ = nullptr;
-};
-
-class VulkanBuffer {
-public:
-    VulkanBuffer() = default;
-    VulkanBuffer(VulkanBuffer&& other) noexcept;
-    VulkanBuffer& operator=(VulkanBuffer&& other) noexcept;
-    VulkanBuffer(const VulkanBuffer&) = delete;
-    VulkanBuffer& operator=(const VulkanBuffer&) = delete;
-    ~VulkanBuffer();
-
-    VkBuffer handle() const { return buffer_; }
-    VkDeviceSize size() const { return size_; }
-
-private:
-    friend class VulkanContext;
-    VulkanContext* owner_ = nullptr;
-    VkBuffer buffer_ = VK_NULL_HANDLE;
-    VkDeviceMemory memory_ = VK_NULL_HANDLE;
-    VkDeviceSize size_ = 0;
-    void* mapped_ = nullptr;
-    bool cacheable_ = false;
-};
-
-class VulkanImage {
-public:
-    VulkanImage() = default;
-    VulkanImage(VulkanImage&& other) noexcept;
-    VulkanImage& operator=(VulkanImage&& other) noexcept;
-    VulkanImage(const VulkanImage&) = delete;
-    VulkanImage& operator=(const VulkanImage&) = delete;
-    ~VulkanImage();
-
-    std::uint32_t width() const { return width_; }
-    std::uint32_t height() const { return height_; }
-    VkFormat format() const { return format_; }
-
-private:
-    friend class VulkanContext;
-    VulkanContext* owner_ = nullptr;
-    VkImage image_ = VK_NULL_HANDLE;
-    VkDeviceMemory memory_ = VK_NULL_HANDLE;
-    VkImageView view_ = VK_NULL_HANDLE;
-    VkSampler sampler_ = VK_NULL_HANDLE;
-    VkFormat format_ = VK_FORMAT_UNDEFINED;
-    std::uint32_t width_ = 0;
-    std::uint32_t height_ = 0;
-};
-
-class VulkanPipeline {
-public:
-    VulkanPipeline() = default;
-    VulkanPipeline(VulkanPipeline&& other) noexcept;
-    VulkanPipeline& operator=(VulkanPipeline&& other) noexcept;
-    VulkanPipeline(const VulkanPipeline&) = delete;
-    VulkanPipeline& operator=(const VulkanPipeline&) = delete;
-    ~VulkanPipeline();
-    void set_debug_name(const char* name);
-
-private:
-    friend class VulkanContext;
-    VulkanContext* owner_ = nullptr;
-    VkDescriptorSetLayout descriptor_layout_ = VK_NULL_HANDLE;
-    VkPipelineLayout layout_ = VK_NULL_HANDLE;
-    VkPipeline pipeline_ = VK_NULL_HANDLE;
-    std::vector<VkDescriptorType> descriptor_types_;
-    std::vector<VkAccessFlags> descriptor_access_;
-    mutable std::vector<VkDescriptorSet> cached_descriptor_sets_;
-    std::uint32_t push_constant_bytes_ = 0;
-    std::string debug_name_;
-};
+#include <inferbridge/vulkan/declarations/vulkan_pipeline.h>
 
 class VulkanContext {
 public:
