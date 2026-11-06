@@ -10,9 +10,12 @@ import json
 from pathlib import Path
 import sys
 import struct
+import tempfile
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from rtx_depth_models import FAMILIES as ADDITIONAL_FAMILIES
 
 
-def convert_graph_to_fp16(model):
+def convert_graph_to_fp16(model, disable_shape_infer=False):
     """Convert a CPU-traced FP32 graph to the FP16 TensorRT contract.
 
     onnxconverter-common deliberately leaves a few numerically sensitive
@@ -34,7 +37,7 @@ def convert_graph_to_fp16(model):
     converted = float16.convert_float_to_float16(
         model,
         keep_io_types=False,
-        disable_shape_infer=False,
+        disable_shape_infer=disable_shape_infer,
         # Let NumPy perform normal IEEE FP16 rounding and underflow instead of
         # clamping every tiny nonzero weight to the converter's default 1e-7.
         min_positive_val=1e-30,
@@ -51,14 +54,19 @@ def convert_graph_to_fp16(model):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--family", choices=("distill-any-depth", "depth-anything-v2", "depth-anything-3"), default="distill-any-depth")
+    parser.add_argument("--family", choices=("distill-any-depth", "depth-anything-v2", "depth-anything-3", *ADDITIONAL_FAMILIES), default="distill-any-depth")
     parser.add_argument("--checkpoint", type=Path, required=True)
-    parser.add_argument("--encoder", choices=("vits", "vitb", "vitl", "metric_hypersim_vits", "metric_hypersim_vitb", "metric_hypersim_vitl", "metric_vkitti_vits", "metric_vkitti_vitb", "metric_vkitti_vitl"), required=True)
+    parser.add_argument("--encoder", required=True)
     parser.add_argument("--width", type=int, required=True)
     parser.add_argument("--height", type=int, required=True)
     parser.add_argument("--precision", choices=("fp32", "fp16"), default="fp16")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--validation-directory", type=Path,
+                        help="Write deterministic FP32 reference tensors for GPU acceptance tests")
     args = parser.parse_args()
+    from rtx_depth_models import SUPPORTED_VARIANTS
+    if args.encoder not in SUPPORTED_VARIANTS[args.family]:
+        parser.error('unsupported weight for ' + args.family)
     if args.family == "distill-any-depth" and args.checkpoint.suffix.lower() != ".safetensors":
         parser.error("use the canonical .safetensors checkpoint")
     sizes = (140, 182, 280, 420, 560, 700, 840, 980)
@@ -71,7 +79,11 @@ def main():
     if not families.exists():
         families = source.parent
     configs = {"vits": (64, [48, 96, 192, 384]), "vitb": (128, [96, 192, 384, 768]), "vitl": (256, [256, 512, 1024, 1024])}
-    if args.family == 'depth-anything-3':
+    if args.family in ADDITIONAL_FAMILIES:
+        from rtx_depth_models import build
+        graph, checkpoint = build(args.family, args.encoder, args.checkpoint, families, args.width, args.height)
+        model = graph
+    elif args.family == 'depth-anything-3':
         if args.encoder != 'vits':
             parser.error('only the canonical DA3 Small snapshot is currently supported')
         sys.path.insert(0, str(families / 'depth-anything-v3' / 'src'))
@@ -147,21 +159,38 @@ def main():
     # export executes the complete graph. Always trace on the CPU in FP32, then
     # convert the finished ONNX graph for an FP16 TensorRT engine. This keeps
     # setup independent of CUDA while preserving FP16 engine I/O and weights.
-    graph = DepthOnly(model).float()
+    graph = model.float() if args.family in ADDITIONAL_FAMILIES else DepthOnly(model).float()
     image = torch.zeros((1, 3, args.height, args.width), dtype=torch.float32)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = args.output.with_suffix(".partial.onnx")
-    with torch.inference_mode():
-        torch.onnx.export(graph, image, str(temporary), input_names=["image"],
-                          output_names=["depth"], opset_version=18, dynamo=False,
-                          dynamic_axes=None)
-    import onnx
-    exported = onnx.load(str(temporary))
-    if args.precision == "fp16":
-        exported = convert_graph_to_fp16(exported)
-        onnx.save(exported, str(temporary))
-    onnx.checker.check_model(exported)
-    temporary.replace(args.output)
+    # Torch's external-data tensor filenames are not unique across exports.
+    # Isolate concurrent shapes, then publish one uniquely named data sidecar.
+    with tempfile.TemporaryDirectory(prefix=args.output.stem + '.', dir=args.output.parent) as workspace:
+        temporary = Path(workspace) / 'model.onnx'
+        with torch.inference_mode():
+            torch.onnx.export(graph, image, str(temporary), input_names=["image"],
+                              output_names=["depth"], opset_version=18, dynamo=False,
+                              dynamic_axes=None)
+        import onnx
+        exported = onnx.load(str(temporary))
+        if args.precision == "fp16":
+            exported = convert_graph_to_fp16(exported, disable_shape_infer=args.family == 'depth-pro')
+        published = args.output.with_suffix('.partial.onnx')
+        data_name = args.output.name + '.data'
+        data_path = args.output.parent / data_name
+        data_path.unlink(missing_ok=True)
+        onnx.save_model(exported, str(published), save_as_external_data=True,
+                        all_tensors_to_one_file=True, location=data_name, size_threshold=1024)
+        onnx.checker.check_model(str(published))
+        published.replace(args.output)
+    if args.validation_directory:
+        args.validation_directory.mkdir(parents=True, exist_ok=True)
+        generator = torch.Generator().manual_seed(20261106)
+        sample = torch.rand(image.shape, generator=generator)
+        sample = (sample - torch.tensor([.485, .456, .406]).reshape(1, 3, 1, 1)) / torch.tensor([.229, .224, .225]).reshape(1, 3, 1, 1)
+        with torch.inference_mode():
+            reference = graph(sample).float().contiguous()
+        sample.numpy().tofile(args.validation_directory / 'input.f32')
+        reference.numpy().tofile(args.validation_directory / 'reference.f32')
     digest = hashlib.sha256()
     with checkpoint.open("rb") as source:
         while chunk := source.read(1024 * 1024):
@@ -170,7 +199,8 @@ def main():
                 "family": args.family,
                 "source_sha256": digest.hexdigest(), "encoder": args.encoder,
                 "precision": args.precision, "input_shape": list(image.shape), "dynamic": False,
-                "depth_convention": "raw_forward_depth" if args.family == "depth-anything-3" else
+                "depth_convention": __import__('rtx_depth_models').convention(args.family) if args.family in ADDITIONAL_FAMILIES else
+                    "raw_forward_depth" if args.family == "depth-anything-3" else
                     "normalized_forward_metric" if args.encoder.startswith("metric_") else "raw_inverse_depth", "opset": 18}
     args.output.with_suffix(".json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 

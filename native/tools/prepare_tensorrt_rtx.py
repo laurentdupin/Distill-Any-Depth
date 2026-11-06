@@ -10,6 +10,8 @@ import ctypes
 import os
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 SIZES = (140, 182, 280, 420, 560, 700, 840, 980)
 PIPELINE_VERSION = 'depth-pipeline-v3'
 
@@ -52,7 +54,8 @@ def build_worker_count(checkpoint, task_count):
 def main(family='distill-any-depth'):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint', type=Path, required=True)
-    parser.add_argument('--encoder', choices=('vits', 'vitb', 'vitl', 'metric_hypersim_vits', 'metric_hypersim_vitb', 'metric_hypersim_vitl', 'metric_vkitti_vits', 'metric_vkitti_vitb', 'metric_vkitti_vitl'), required=True)
+    parser.add_argument('--encoder', required=True)
+    parser.add_argument('--family', default=family)
     parser.add_argument('--precision', choices=('fp16', 'fp32'), required=True)
     parser.add_argument('--engine-builder', type=Path, required=True)
     parser.add_argument('--cache-builder', type=Path, required=True)
@@ -62,6 +65,10 @@ def main(family='distill-any-depth'):
     parser.add_argument('--reuse-from', type=Path)
     parser.add_argument('--sizes', nargs='+', type=int, choices=SIZES, default=list(SIZES))
     args = parser.parse_args()
+    family = args.family
+    from rtx_depth_models import FAMILIES, SUPPORTED_VARIANTS, convention
+    if family not in SUPPORTED_VARIANTS or args.encoder not in SUPPORTED_VARIANTS[family]:
+        parser.error('unsupported weight for ' + family)
     if args.output.exists() and not args.resume:
         parser.error('output must be a fresh installation staging directory')
     args.output.mkdir(parents=True, exist_ok=args.resume)
@@ -117,6 +124,7 @@ def main(family='distill-any-depth'):
         subprocess.run([str(args.engine_builder), str(onnx), str(engine)], check=True)
         print(f'TensorRT engine completed size={size} duration_ms={int((time.monotonic() - exported) * 1000)}', flush=True)
         onnx.unlink(missing_ok=True)
+        onnx.with_name(onnx.name + ".data").unlink(missing_ok=True)
 
     missing_engines = [size for size in selected_sizes if not (
         args.resume and (args.output / f'{args.encoder}-{size}-{args.precision}.engine').is_file())]
@@ -150,7 +158,8 @@ def main(family='distill-any-depth'):
     # Publish this marker only once every shape has finished conversion and GPU warmup.
     manifest = {'schema': 1, 'pipeline_version': PIPELINE_VERSION,
                 'encoder': args.encoder, 'precision': args.precision,
-                'depth_convention': 'raw_forward_depth' if family == 'depth-anything-3' else
+                'depth_convention': convention(family) if family in FAMILIES else
+                    'raw_forward_depth' if family == 'depth-anything-3' else
                     'normalized_forward_metric' if args.encoder.startswith('metric_') else 'normalized_inverse_depth',
                 'family': family, 'devices': devices, 'shapes': entries}
     (args.output / 'shapes.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')

@@ -1,5 +1,6 @@
 #include "inferbridge/native_harness_queue_priority.h"
 #include <inferbridge/native_harness_json.h>
+#include <inferbridge/rtx_profiles.h>
 #include "inferbridge_harness.h"
 
 #include "distill_any_depth.h"
@@ -542,8 +543,7 @@ ibrh_result IBRH_CALL model_load(
     }
     std::string enc = "vits";
     (void)json_string(parameters, "Encoder", enc);
-    const std::set<std::string> rtx_encoders{"vits", "vitb", "vitl", "metric_hypersim_vits", "metric_hypersim_vitb", "metric_hypersim_vitl", "metric_vkitti_vits", "metric_vkitti_vitb", "metric_vkitti_vitl"};
-    if (rtx_encoders.count(enc) == 0u) {
+    if (!inferbridge::rtx::supported_selector(enc)) {
         delete model;
         return fail(runtime, IBRH_ERROR_INVALID_ARGUMENT, "RTX encoder is unsupported");
     }

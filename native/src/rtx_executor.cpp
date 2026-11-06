@@ -60,6 +60,9 @@ struct RtxState {
         if(da3&&convention_name=="raw_forward_depth")convention=DepthConvention::ForwardRelative;
         else if(family=="depth-anything-v2"&&convention_name=="normalized_forward_metric")convention=DepthConvention::NormalizedForwardMetric;
         else if((family=="depth-anything-v2"||family=="distill-any-depth")&&convention_name=="normalized_inverse_depth")convention=DepthConvention::NormalizedInverse;
+        else if((family=="depth-anything"||family=="midas"||family=="zipdepth"||family=="zoedepth")&&convention_name=="normalized_inverse_depth")convention=DepthConvention::NormalizedInverse;
+        else if(family=="depth-pro"&&convention_name=="normalized_forward_metric")convention=DepthConvention::NormalizedForwardMetric;
+        else if((family=="moge-2"||family=="metricanything")&&convention_name=="pointmap_metric")convention=DepthConvention::PointMapMetric;
         else throw std::runtime_error("RTX depth convention does not match the prepared family; run setup again");
         auto cache=engine.parent_path()/std::filesystem::u8path("gpu-"+id.str())/engine.filename();
         cache.replace_extension(".cache");
